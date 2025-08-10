@@ -6,7 +6,11 @@ import (
 )
 
 var sentenceEndRegex = regexp.MustCompile(`([.!?])(\s+|$)`)
-var tokenizeCleanRegex = regexp.MustCompile(`[^a-z0-9\s-]`)
+
+// This regex uses Unicode properties:
+// \p{L} - any letter from any language
+// \p{N} - any number from any language
+var tokenizeCleanRegex = regexp.MustCompile(`[^\p{L}\p{N}\s-]`)
 
 func SplitSentences(text string) []string {
 	delimited := sentenceEndRegex.ReplaceAllString(text, "$1|")
