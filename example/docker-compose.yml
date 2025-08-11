@@ -1,6 +1,11 @@
 services:
   semseg-api:
-    build: .
+    build:
+      context: ..
+      dockerfile: example/Dockerfile
+      args:
+        USE_LOCAL: "1"
     ports:
       - "8080:8080"
     restart: unless-stopped
+

@@ -35,7 +35,8 @@ type Options struct {
 	// DepthThreshold (range 0.0 to 1.0) is used when MinSplitSimilarity is 0.
 	// It defines the minimum "depth" of a similarity dip to be considered a valid split point.
 	// This helps filter out minor, insignificant fluctuations.
-	// Default: 0.1
+	// Default: 0.1. To force zero (i.e., accept any local minimum), set to 0 explicitly.
+	// If set to a negative value, the library will use the default (0.1).
 	DepthThreshold float64
 }
 
@@ -83,7 +84,9 @@ func validateOptions(opts Options) error {
 }
 
 func setDefaultOptions(opts *Options) {
-	if opts.DepthThreshold == 0 {
+	// Only apply default when user requested "use default" via negative value.
+	// 0 is a valid explicit setting and must not be overridden.
+	if opts.MinSplitSimilarity == 0 && opts.DepthThreshold < 0 {
 		opts.DepthThreshold = 0.1
 	}
 }

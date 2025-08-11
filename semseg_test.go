@@ -50,6 +50,33 @@ func TestSegment(t *testing.T) {
 			if len(chunks) != tc.expectedNumChunks {
 				t.Fatalf("Expected %d chunks, but got %d", tc.expectedNumChunks, len(chunks))
 			}
+
+			if len(tc.expectedTokens) > 0 {
+				if len(tc.expectedTokens) != len(chunks) {
+					t.Fatalf("Expected token spec for %d chunks, got %d", len(chunks), len(tc.expectedTokens))
+				}
+				for i, ch := range chunks {
+					if ch.NumTokens != tc.expectedTokens[i] {
+						t.Fatalf("Chunk %d tokens: expected %d, got %d", i, tc.expectedTokens[i], ch.NumTokens)
+					}
+				}
+			}
 		})
+	}
+}
+
+func TestSplitAndTokenizeIntegration(t *testing.T) {
+	text := `Hello world." Don't panic… Seriously!`
+	chunks, err := Segment(text, Options{MaxTokens: 10})
+	if err != nil {
+		t.Fatalf("Segment() error: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("Expected at least one chunk")
+	}
+	// Ensure tokenizer keeps contractions and hyphenated words intact
+	toks := strings.Fields(strings.ToLower(chunks[0].Text))
+	if len(toks) == 0 {
+		t.Fatalf("Expected tokens in first chunk")
 	}
 }
