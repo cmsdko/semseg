@@ -84,8 +84,11 @@ func validateOptions(opts Options) error {
 }
 
 func setDefaultOptions(opts *Options) {
-	// Only apply default when user requested "use default" via negative value.
-	// 0 is a valid explicit setting and must not be overridden.
+	// Default value logic for DepthThreshold:
+	// - Only set default (0.1) when user explicitly requests it via negative value
+	// - Zero is a valid user setting meaning "accept any local minimum"
+	// - We must distinguish between user-set zero and uninitialized zero
+	// - MinSplitSimilarity == 0 ensures we're using local minima method
 	if opts.MinSplitSimilarity == 0 && opts.DepthThreshold < 0 {
 		opts.DepthThreshold = 0.1
 	}
@@ -108,7 +111,7 @@ func findBoundaries(scores []float64, opts Options) map[int]bool {
 	}
 
 	for i := 0; i < len(scores); i++ {
-		// Fixed threshold method
+		// Method 1: Fixed threshold - split when similarity drops below threshold
 		if opts.MinSplitSimilarity > 0 {
 			if scores[i] < opts.MinSplitSimilarity {
 				boundaries[i] = true
@@ -116,10 +119,16 @@ func findBoundaries(scores []float64, opts Options) map[int]bool {
 			continue
 		}
 
-		// Local minima method (default)
+		// Method 2: Local minima detection (default, more robust)
+		// Only consider interior points to ensure we have neighbors on both sides
 		if i > 0 && i < len(scores)-1 {
+			// A local minimum occurs when a point is lower than both neighbors
 			isLocalMinimum := scores[i] < scores[i-1] && scores[i] < scores[i+1]
 			if isLocalMinimum {
+				// Calculate "depth" of the minimum to filter out insignificant dips:
+				// - Take average of neighboring similarity scores
+				// - Subtract the minimum value to get the depth of the dip
+				// - Only accept minima that are "deep enough" to avoid noise
 				depth := (scores[i-1]+scores[i+1])/2 - scores[i]
 				if depth >= opts.DepthThreshold {
 					boundaries[i] = true
@@ -143,7 +152,8 @@ func buildChunks(
 
 	for i, sentence := range sentences {
 		sentenceTokens := tokenCounts[i]
-
+		// Handle oversized sentences: if a single sentence exceeds maxTokens,
+		// place it in its own chunk regardless of semantic boundaries
 		if sentenceTokens > maxTokens {
 			if len(currentChunkSentences) > 0 {
 				chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
@@ -153,20 +163,26 @@ func buildChunks(
 			currentChunkTokens = 0
 			continue
 		}
-
+		// Check if we should split at this position:
+		// - isSemanticBoundary uses [i-1] because boundary indices represent gaps BETWEEN sentences
+		//   (i.e., boundaryIndices[j] means there's a boundary after sentence j, before sentence j+1)
+		// - tokenLimitExceeded ensures we never exceed MaxTokens per chunk
 		isSemanticBoundary := i > 0 && boundaryIndices[i-1]
 		tokenLimitExceeded := currentChunkTokens+sentenceTokens > maxTokens
 
+		// Start a new chunk if we have content and hit either condition
 		if len(currentChunkSentences) > 0 && (isSemanticBoundary || tokenLimitExceeded) {
 			chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
 			currentChunkSentences = []string{}
 			currentChunkTokens = 0
 		}
 
+		// Add current sentence to the chunk
 		currentChunkSentences = append(currentChunkSentences, sentence)
 		currentChunkTokens += sentenceTokens
 	}
 
+	// Don't forget the last chunk if it has content
 	if len(currentChunkSentences) > 0 {
 		chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
 	}

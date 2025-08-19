@@ -29,6 +29,7 @@ func (c *corpus) Vectorize(tokens []string) map[string]float64 {
 		return make(map[string]float64)
 	}
 
+	// Calculate Term Frequency (TF) - normalized by document length
 	tf := make(map[string]float64)
 	for _, token := range tokens {
 		tf[token]++
@@ -38,8 +39,13 @@ func (c *corpus) Vectorize(tokens []string) map[string]float64 {
 		tf[token] = count / numTokens
 	}
 
+	// Calculate TF-IDF vector
 	vector := make(map[string]float64)
 	for token, termFreq := range tf {
+		// Modified IDF formula with smoothing:
+		// - Add 1 to numerator to prevent log(0) when all docs contain the term
+		// - Add 1 to denominator to prevent division by 0 for unseen terms
+		// - This smoothing makes the algorithm more robust for small corpora
 		idf := math.Log(1 + (float64(c.numDocs) / (1 + float64(c.docFrequencies[token]))))
 		vector[token] = termFreq * idf
 	}

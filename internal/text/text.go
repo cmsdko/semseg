@@ -5,14 +5,18 @@ import (
 	"strings"
 )
 
-// End of sentence: ., !, ?, … followed by optional closing quotes/brackets then space or end.
-// Handles cases like: 'Hello world."', «Привет мир!», 你好。
+// Sentence boundary detection regex:
+// - Matches sentence-ending punctuation: . ! ? …
+// - Followed by optional closing quotes/brackets: " " » '
+// - Then either whitespace or end of string
+// - Handles multilingual punctuation and quote styles
 var sentenceEndRegex = regexp.MustCompile(`([.!?…])([”"»']*)\s+|([.!?…])([”"»']*)$`)
 
-// This regex uses Unicode properties:
-// \p{L} - any letter from any language
-// \p{N} - any number from any language
-// Allow hyphen and apostrophe inside terms.
+// Token cleaning regex using Unicode character classes:
+// - \p{L}: Unicode letters from any language (Latin, Cyrillic, Chinese, etc.)
+// - \p{N}: Unicode numbers from any language
+// - Preserves hyphens and apostrophes for compound words and contractions
+// - Removes all other punctuation and special characters
 var tokenizeCleanRegex = regexp.MustCompile(`[^\p{L}\p{N}\s\-']`)
 
 func SplitSentences(text string) []string {
