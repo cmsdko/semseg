@@ -34,6 +34,18 @@ type APIRequest struct {
 	// dip to be considered a valid split point. This prevents minor fluctuations
 	// from causing unnecessary splits. Default is 0.1 if not specified.
 	DepthThreshold float64 `json:"depth_threshold,omitempty"`
+
+	// Language can be provided to skip auto-detection and force a specific language.
+	// Example: "english", "russian". If omitted, language is detected automatically.
+	Language string `json:"language,omitempty"`
+
+	// EnableStopWordRemoval controls the removal of noise words. Defaults to true.
+	// Set to false to disable.
+	EnableStopWordRemoval *bool `json:"enable_stop_word_removal,omitempty"`
+
+	// EnableStemming controls word stemming. Defaults to true.
+	// Set to false to disable.
+	EnableStemming *bool `json:"enable_stemming,omitempty"`
 }
 
 // handleSegment processes HTTP requests to the /segment endpoint.
@@ -64,12 +76,15 @@ func handleSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Configure the segmentation options based on the request parameters
-	// The library handles default values internally for optional parameters
+	// Configure the segmentation options based on the request parameters.
+	// The library handles default values internally for optional parameters.
 	opts := semseg.Options{
-		MaxTokens:          req.MaxTokens,
-		MinSplitSimilarity: req.MinSplitSimilarity, // 0 = use local minima detection
-		DepthThreshold:     req.DepthThreshold,     // < 0 = use default 0.1
+		MaxTokens:             req.MaxTokens,
+		MinSplitSimilarity:    req.MinSplitSimilarity,
+		DepthThreshold:        req.DepthThreshold,
+		Language:              req.Language,
+		EnableStopWordRemoval: req.EnableStopWordRemoval,
+		EnableStemming:        req.EnableStemming,
 	}
 
 	// Perform the actual text segmentation using the semseg library

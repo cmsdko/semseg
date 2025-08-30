@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.comcom/cmsdko/semseg/internal/lang"
+	"github.com/cmsdko/semseg/internal/lang"
 	"github.com/cmsdko/semseg/internal/text"
 	"github.com/cmsdko/semseg/internal/tfidf"
 )
@@ -40,6 +40,21 @@ type Options struct {
 	// Default: 0.1. To force zero (i.e., accept any local minimum), set to 0 explicitly.
 	// If set to a negative value, the library will use the default (0.1).
 	DepthThreshold float64
+
+	// Language forces the segmenter to use a specific language (e.g., "english", "russian"),
+	// skipping the language auto-detection step.
+	// If empty (default), the language will be auto-detected from the input text.
+	Language string
+
+	// EnableStopWordRemoval controls whether common "noise words" are removed before similarity calculation.
+	// Disabling this may reduce segmentation quality but can be useful for specific use cases.
+	// If nil (default), it is treated as true.
+	EnableStopWordRemoval *bool
+
+	// EnableStemming controls whether token stemming (reducing words to their root form) is applied.
+	// Disabling this can be useful for languages where stemming is aggressive or not needed.
+	// If nil (default), it is treated as true.
+	EnableStemming *bool
 }
 
 // Segment splits a given text into semantic chunks based on the provided options.
@@ -58,6 +73,14 @@ func Segment(textStr string, opts Options) ([]Chunk, error) {
 		return []Chunk{makeChunk(sentences, len(tokens))}, nil
 	}
 
+	// Determine the language once: either from options or by auto-detecting the entire text.
+	var detectedLang string
+	if opts.Language != "" {
+		detectedLang = opts.Language
+	} else {
+		detectedLang = lang.DetectLanguage(textStr)
+	}
+
 	tokenizedSentences := make([][]string, len(sentences))
 	tokenCounts := make([]int, len(sentences))
 	for i, s := range sentences {
@@ -66,17 +89,19 @@ func Segment(textStr string, opts Options) ([]Chunk, error) {
 		originalTokens := text.Tokenize(s)
 		tokenCounts[i] = len(originalTokens)
 
-		// --- MODIFICATION START ---
-		// For similarity calculation, first detect language, remove stop words, and stem.
-		// This improves the quality of TF-IDF by focusing on the core meaning of words.
-		detectedLang := lang.DetectLanguage(s)
-		sentenceForSimilarity := lang.RemoveStopWords(s, detectedLang)
+		// For similarity calculation, optionally remove stop words and apply stemming.
+		sentenceForSimilarity := s
+		if *opts.EnableStopWordRemoval {
+			sentenceForSimilarity = lang.RemoveStopWords(sentenceForSimilarity, detectedLang)
+		}
+
 		tokensForSimilarity := text.Tokenize(sentenceForSimilarity)
 
-		// Apply stemming to the tokens to normalize them.
-		stemmedTokens := lang.StemTokens(tokensForSimilarity, detectedLang)
-		tokenizedSentences[i] = stemmedTokens
-		// --- MODIFICATION END ---
+		if *opts.EnableStemming {
+			tokensForSimilarity = lang.StemTokens(tokensForSimilarity, detectedLang)
+		}
+
+		tokenizedSentences[i] = tokensForSimilarity
 	}
 
 	corpus := tfidf.NewCorpus(tokenizedSentences)
@@ -99,13 +124,20 @@ func validateOptions(opts Options) error {
 }
 
 func setDefaultOptions(opts *Options) {
-	// Default value logic for DepthThreshold:
-	// - Only set default (0.1) when user explicitly requests it via negative value
-	// - Zero is a valid user setting meaning "accept any local minimum"
-	// - We must distinguish between user-set zero and uninitialized zero
-	// - MinSplitSimilarity == 0 ensures we're using local minima method
+	// Default value logic for DepthThreshold.
 	if opts.MinSplitSimilarity == 0 && opts.DepthThreshold < 0 {
 		opts.DepthThreshold = 0.1
+	}
+
+	// Set default values for new boolean flags if they were not provided.
+	// A nil pointer indicates the user did not specify the value, so we default to true.
+	if opts.EnableStopWordRemoval == nil {
+		t := true
+		opts.EnableStopWordRemoval = &t
+	}
+	if opts.EnableStemming == nil {
+		t := true
+		opts.EnableStemming = &t
 	}
 }
 

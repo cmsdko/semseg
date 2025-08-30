@@ -33,6 +33,11 @@ func SplitSentences(text string) []string {
 	return sentences
 }
 
+// Tokenize produces the canonical token stream for the whole library.
+// - Lowercases
+// - Keeps letters and numbers in any script, preserves internal '-' and '\'' in tokens
+// - Trims leading/trailing '-' and '\''
+// This is the single source of truth used by lang.* and semseg.*.
 func Tokenize(text string) []string {
 	lower := strings.ToLower(text)
 	cleaned := tokenizeCleanRegex.ReplaceAllString(lower, "")
@@ -48,3 +53,4 @@ func Tokenize(text string) []string {
 	}
 	return out
 }
+

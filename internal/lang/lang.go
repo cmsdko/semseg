@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/cmsdko/semseg/internal/text"
 )
 
 // --- DATA STRUCTURES ---
@@ -55,7 +57,7 @@ const (
 var (
 	invertedIndexMask   map[string]uint64
 	stopWordsByLang     map[string]map[string]struct{}
-	stemmingRulesByLang map[string]StemmingRules // ADDED: Stores stemming rules
+	stemmingRulesByLang map[string]StemmingRules
 	languageMasks       map[string]uint64
 
 	// langsByScript stores which languages use a specific script, built at init time.
@@ -97,7 +99,7 @@ func init() {
 	// 4. Initialize the main data structures
 	invertedIndexMask = make(map[string]uint64)
 	stopWordsByLang = make(map[string]map[string]struct{})
-	stemmingRulesByLang = make(map[string]StemmingRules) // ADDED: Initialize stemming map
+	stemmingRulesByLang = make(map[string]StemmingRules)
 	langsByScript = make(map[string][]string)
 
 	// Dynamically determine the script for each language based on its stop words.
@@ -162,7 +164,7 @@ func init() {
 		}
 		stopWordsByLang[lang] = wordSet
 
-		// ADDED: Populate stemming rules, sorting affixes for correctness
+		// Populate stemming rules, sorting affixes for correctness
 		rules := data.Stemming
 		// Sort by length descending to match longer affixes first (e.g., "ational" before "ate")
 		sort.Slice(rules.Prefixes, func(i, j int) bool {
@@ -184,12 +186,12 @@ func init() {
 // --- CORE FUNCTIONS ---
 
 // DetectLanguage identifies the language of a sentence.
-// Returns the language name or "unknown" if it cannot be determined.
+// Uses text.Tokenize as the single tokenizer to ensure consistent behavior across packages.
 func DetectLanguage(sentence string) string {
 	// First, narrow down the potential languages based on the script.
 	candidateLangs := getCandidateLangs(sentence)
 
-	tokens := tokenize(sentence)
+	tokens := text.Tokenize(sentence)
 	if len(tokens) == 0 {
 		return LangUnknown
 	}
@@ -237,13 +239,14 @@ func DetectLanguage(sentence string) string {
 
 // RemoveStopWords removes stop words from a sentence for a given language.
 // If the language is not supported or unknown, it returns the original sentence.
+// Uses the unified tokenizer from internal/text.
 func RemoveStopWords(sentence string, language string) string {
 	stopWords, ok := stopWordsByLang[language]
 	if !ok || language == LangUnknown {
 		return sentence // Return as is if language is unknown or unsupported
 	}
 
-	tokens := tokenize(sentence)
+	tokens := text.Tokenize(sentence)
 	resultTokens := make([]string, 0, len(tokens))
 
 	for _, token := range tokens {
@@ -366,20 +369,3 @@ func isCandidate(lang string, candidates []string) bool {
 	return false
 }
 
-// tokenize converts a string to lowercase, removes punctuation, and splits it into words.
-func tokenize(sentence string) []string {
-	lower := strings.ToLower(sentence)
-
-	// Efficiently replace punctuation with spaces using a strings.Builder.
-	var sb strings.Builder
-	sb.Grow(len(lower))
-	for _, r := range lower {
-		if unicode.IsLetter(r) || unicode.IsNumber(r) {
-			sb.WriteRune(r)
-		} else {
-			sb.WriteRune(' ')
-		}
-	}
-
-	return strings.Fields(sb.String())
-}

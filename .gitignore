@@ -1,0 +1,50 @@
+# IDE specific files - GoLand / JetBrains
+# These files store your personal project settings, workspace configuration, and run history.
+# They should not be shared with other developers.
+.idea/
+*.iml
+
+# Compiled Go files and binaries
+# These are generated from your source code and should not be versioned.
+# The binary for the example application
+/example/example
+/example/example.exe
+
+# General build output directories (good practice to include)
+/bin/
+/build/
+
+# Go dependency management
+# The 'vendor' directory is managed by 'go mod vendor' and can be regenerated.
+# It's better to rely on go.mod and go.sum.
+/vendor/
+
+# Go test and coverage results
+# These files are generated when running tests and are temporary artifacts.
+*.out
+*.cover
+
+# Environment variables
+# Never commit secrets or local configuration.
+# Use a .env.example file for templates.
+.env
+.env.*
+!.env.example
+
+# OS-generated files
+# These files are created by the operating system and have no relevance to the project code.
+
+# macOS
+.DS_Store
+.AppleDouble
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Linux
+*~
