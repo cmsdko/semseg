@@ -1,3 +1,4 @@
+// ./semseg.go
 // Package semseg provides tools for semantically splitting text into meaningful chunks.
 package semseg
 
@@ -5,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.comcom/cmsdko/semseg/internal/lang"
 	"github.com/cmsdko/semseg/internal/text"
 	"github.com/cmsdko/semseg/internal/tfidf"
 )
@@ -59,9 +61,22 @@ func Segment(textStr string, opts Options) ([]Chunk, error) {
 	tokenizedSentences := make([][]string, len(sentences))
 	tokenCounts := make([]int, len(sentences))
 	for i, s := range sentences {
-		tokens := text.Tokenize(s)
-		tokenizedSentences[i] = tokens
-		tokenCounts[i] = len(tokens)
+		// Calculate token count for chunking from the *original* sentence.
+		// This ensures the MaxTokens limit is respected based on what the user provided.
+		originalTokens := text.Tokenize(s)
+		tokenCounts[i] = len(originalTokens)
+
+		// --- MODIFICATION START ---
+		// For similarity calculation, first detect language, remove stop words, and stem.
+		// This improves the quality of TF-IDF by focusing on the core meaning of words.
+		detectedLang := lang.DetectLanguage(s)
+		sentenceForSimilarity := lang.RemoveStopWords(s, detectedLang)
+		tokensForSimilarity := text.Tokenize(sentenceForSimilarity)
+
+		// Apply stemming to the tokens to normalize them.
+		stemmedTokens := lang.StemTokens(tokensForSimilarity, detectedLang)
+		tokenizedSentences[i] = stemmedTokens
+		// --- MODIFICATION END ---
 	}
 
 	corpus := tfidf.NewCorpus(tokenizedSentences)
