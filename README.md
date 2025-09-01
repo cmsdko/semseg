@@ -12,10 +12,13 @@ Perfect for preprocessing text in RAG (Retrieval-Augmented Generation) pipelines
 ## Features
 
 - **Semantic Splitting**: Splits at points of low semantic similarity while keeping related content together.
+- **Two Embedding Modes**:
+    - **Default (TF-IDF)**: Fast, lightweight, zero-dependency classical approach.
+    - **External (Ollama)**: Use modern embedding models via Ollama for higher accuracy.
 - **Strict Token Limit**: Ensures no chunk exceeds `MaxTokens` (unless a single sentence is larger).
-- **Language Awareness**: Automatic or manual language detection, stopword removal, stemming, and abbreviation handling.
+- **Language Awareness**: Automatic or manual language detection, stopword removal, stemming, and abbreviation handling (for TF-IDF mode).
 - **Configurable**: Fine‑tune similarity thresholds, detection modes, and preprocessing options.
-- **Zero Dependencies**: 100% Go, no external models or libraries.
+- **Zero Dependencies**: 100% Go, no external models or libraries (in TF-IDF mode).
 - **Fast and Lightweight**: Classic TF‑IDF approach, optimized for CPU workloads.
 
 ## Installation
@@ -91,7 +94,7 @@ Depending on `Options`, the pipeline adapts as follows:
 
 - **Stopword Removal**
     - Controlled by `EnableStopWordRemoval`.
-    - Uses stopwords from `internal/data/stopwords.json`.
+    - Uses stopwords from `internal/lang/data/stopwords.json`.
     - You can **add/remove languages or stopwords** by editing this JSON.
 
 - **Stemming**
@@ -124,11 +127,37 @@ curl -X POST http://localhost:8080/segment -d '{
 Response:
 
 ```json
-[
-  {"Text":"Mars is red.","Sentences":["Mars is red."],"NumTokens":3},
-  {"Text":"Venus is hot.","Sentences":["Venus is hot."],"NumTokens":3},
-  {"Text":"The ocean is blue.","Sentences":["The ocean is blue."],"NumTokens":4}
-]
+{
+  "options_used":{
+    "max_tokens":10,
+    "min_split_similarity":0,
+    "depth_threshold":0.1,
+    "language":"",
+    "language_detection_mode":"first_sentence",
+    "language_detection_tokens":0,
+    "pre_normalize_abbreviations":true,
+    "enable_stop_word_removal":true,
+    "enable_stemming":true
+  },
+  "chunks":[
+    {
+      "Text":"Mars is red. Venus is hot. The ocean is blue.",
+      "Sentences":[
+        "Mars is red.",
+        "Venus is hot.",
+        "The ocean is blue."
+      ],
+      "NumTokens":10
+    }
+  ],
+  "stats":{
+    "total_chunks":1,
+    "total_tokens":10,
+    "processing_time_ms":0.078,
+    "chunks_per_second":12705.027379334004,
+    "tokens_per_second":127050.27379334003
+  }
+}
 ```
 ## Known Limitations
 

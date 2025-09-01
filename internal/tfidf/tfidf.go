@@ -60,27 +60,28 @@ func (c *corpus) Vectorize(tokens []string) map[string]float64 {
 // CosineSimilarity computes cosine similarity between two sparse vectors.
 // Returns a value in [0,1] (0 if either vector is zero).
 func CosineSimilarity(v1, v2 map[string]float64) float64 {
-	dotProduct, normA, normB := 0.0, 0.0, 0.0
-	allWords := make(map[string]bool)
-
-	// Union of keys
-	for word := range v1 {
-		allWords[word] = true
-	}
-	for word := range v2 {
-		allWords[word] = true
+	// Pick smaller map for iteration to reduce lookups
+	a, b := v1, v2
+	if len(a) > len(b) {
+		a, b = b, a
 	}
 
-	// Compute dot product and norms
-	for word := range allWords {
-		x, y := v1[word], v2[word]
-		dotProduct += x * y
+	var dot, normA, normB float64
+
+	// Dot product and normA
+	for k, x := range a {
+		y := b[k]
+		dot += x * y
 		normA += x * x
+	}
+
+	// NormB
+	for _, y := range b {
 		normB += y * y
 	}
 
 	if normA == 0 || normB == 0 {
-		return 0.0
+		return 0
 	}
-	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }

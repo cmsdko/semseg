@@ -1,65 +1,47 @@
+// file: example/main.go
 package main
 
 import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/cmsdko/semseg"
 )
 
+const (
+	defaultOllamaTimeoutSeconds = 60
+)
+
 // APIRequest represents the JSON structure expected by the /segment endpoint.
 // It contains the text to be segmented and all optional configuration parameters.
 type APIRequest struct {
-	// Text is the input string for semantic segmentation. This field is required.
-	Text string `json:"text"`
-
-	// MaxTokens is the hard limit on the number of tokens in a chunk. This field is required and must be > 0.
-	MaxTokens int `json:"max_tokens"`
-
-	// MinSplitSimilarity is the cosine similarity threshold (0.0 to 1.0) for splitting.
-	// If 0 (the default), the local minima search method is used.
-	MinSplitSimilarity float64 `json:"min_split_similarity,omitempty"`
-
-	// DepthThreshold is used when MinSplitSimilarity=0. It defines the minimum "depth"
-	// of the similarity dip for a split point. Defaults to 0.1.
-	DepthThreshold float64 `json:"depth_threshold,omitempty"`
-
-	// Language forces a specific language (e.g., "english"), skipping auto-detection.
-	Language string `json:"language,omitempty"`
-
-	// LanguageDetectionMode is the strategy for language auto-detection if Language is not set.
-	// Possible values: "first_sentence", "first_ten_sentences", "per_sentence", "full_text".
-	LanguageDetectionMode string `json:"language_detection_mode,omitempty"`
-
-	// LanguageDetectionTokens enables early language detection based on the first N tokens.
-	// If > 0, the language is detected before splitting into sentences.
-	LanguageDetectionTokens int `json:"language_detection_tokens,omitempty"`
-
-	// PreNormalizeAbbreviations normalizes abbreviations with periods (e.g., U.S.A. -> USA) before sentence splitting.
-	// Defaults to true.
-	PreNormalizeAbbreviations *bool `json:"pre_normalize_abbreviations,omitempty"`
-
-	// EnableStopWordRemoval controls the removal of stop words. Defaults to true.
-	EnableStopWordRemoval *bool `json:"enable_stop_word_removal,omitempty"`
-
-	// EnableStemming controls stemming (reducing words to their root form). Defaults to true.
-	EnableStemming *bool `json:"enable_stemming,omitempty"`
+	Text                      string  `json:"text"`
+	MaxTokens                 int     `json:"max_tokens"`
+	MinSplitSimilarity        float64 `json:"min_split_similarity,omitempty"`
+	DepthThreshold            float64 `json:"depth_threshold,omitempty"`
+	Language                  string  `json:"language,omitempty"`
+	LanguageDetectionMode     string  `json:"language_detection_mode,omitempty"`
+	LanguageDetectionTokens   int     `json:"language_detection_tokens,omitempty"`
+	PreNormalizeAbbreviations *bool   `json:"pre_normalize_abbreviations,omitempty"`
+	EnableStopWordRemoval     *bool   `json:"enable_stop_word_removal,omitempty"`
+	EnableStemming            *bool   `json:"enable_stemming,omitempty"`
 }
 
-// ResponseOptions reflects the settings that were actually used for segmentation,
-// including the default values applied by the server.
+// ResponseOptions reflects the settings that were actually used for segmentation.
 type ResponseOptions struct {
-	MaxTokens                   int     `json:"max_tokens"`
-	MinSplitSimilarity          float64 `json:"min_split_similarity"`
-	DepthThreshold              float64 `json:"depth_threshold"`
-	Language                    string  `json:"language"`
-	LanguageDetectionMode       string  `json:"language_detection_mode"`
-	LanguageDetectionTokens     int     `json:"language_detection_tokens"`
-	PreNormalizeAbbreviations   bool    `json:"pre_normalize_abbreviations"`
-	EnableStopWordRemoval       bool    `json:"enable_stop_word_removal"`
-	EnableStemming              bool    `json:"enable_stemming"`
+	MaxTokens                 int     `json:"max_tokens"`
+	MinSplitSimilarity        float64 `json:"min_split_similarity"`
+	DepthThreshold            float64 `json:"depth_threshold"`
+	Language                  string  `json:"language"`
+	LanguageDetectionMode     string  `json:"language_detection_mode"`
+	LanguageDetectionTokens   int     `json:"language_detection_tokens"`
+	PreNormalizeAbbreviations bool    `json:"pre_normalize_abbreviations"`
+	EnableStopWordRemoval     bool    `json:"enable_stop_word_removal"`
+	EnableStemming            bool    `json:"enable_stemming"`
 }
 
 // Stats contains performance statistics for a single request.
@@ -78,10 +60,42 @@ type APIResponse struct {
 	Stats       Stats           `json:"stats"`
 }
 
+// APIError is the structure for JSON error responses.
+type APIError struct {
+	Error string `json:"error"`
+}
+
+// APIHandler holds dependencies like the shared http.Client.
+// This allows us to inject dependencies and makes handlers testable.
+type APIHandler struct {
+	ollamaClient *http.Client
+}
+
+// NewAPIHandler creates a new handler with its dependencies initialized.
+func NewAPIHandler() *APIHandler {
+	timeoutStr := os.Getenv("OLLAMA_TIMEOUT_SECONDS")
+	timeoutSec, err := strconv.Atoi(timeoutStr)
+	if err != nil || timeoutSec <= 0 {
+		timeoutSec = defaultOllamaTimeoutSeconds
+	}
+
+	log.Printf("Initializing Ollama client with a %d second timeout", timeoutSec)
+
+	// Create a single, reusable http.Client
+	client := &http.Client{
+		Timeout: time.Duration(timeoutSec) * time.Second,
+		// It's good practice to customize the transport for production apps,
+		// e.g., to set MaxIdleConns, MaxIdleConnsPerHost, etc.
+		// For this example, the default transport is sufficient.
+	}
+
+	return &APIHandler{
+		ollamaClient: client,
+	}
+}
+
 // handleSegment handles HTTP POST requests to the /segment endpoint.
-// It accepts a JSON payload with text and parameters, and returns the segmented chunks,
-// the settings used, and performance statistics.
-func handleSegment(w http.ResponseWriter, r *http.Request) {
+func (h *APIHandler) handleSegment(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonError(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
@@ -98,7 +112,7 @@ func handleSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Create options for the semseg library based on the request
+	// 1. Create options for the semseg library, injecting the shared HTTP client.
 	opts := semseg.Options{
 		MaxTokens:                 req.MaxTokens,
 		MinSplitSimilarity:        req.MinSplitSimilarity,
@@ -109,30 +123,13 @@ func handleSegment(w http.ResponseWriter, r *http.Request) {
 		PreNormalizeAbbreviations: req.PreNormalizeAbbreviations,
 		EnableStopWordRemoval:     req.EnableStopWordRemoval,
 		EnableStemming:            req.EnableStemming,
+		HTTPClient:                h.ollamaClient,
 	}
 
-	// 2. Create the response options struct, applying default value logic
-	// so the user can see exactly which settings were used.
-	responseOpts := ResponseOptions{
-		MaxTokens:               req.MaxTokens,
-		MinSplitSimilarity:      req.MinSplitSimilarity,
-		DepthThreshold:          req.DepthThreshold,
-		Language:                req.Language,
-		LanguageDetectionMode:   req.LanguageDetectionMode,
-		LanguageDetectionTokens: req.LanguageDetectionTokens,
-	}
-	// Apply default values
-	if responseOpts.MinSplitSimilarity == 0 && responseOpts.DepthThreshold <= 0 {
-		responseOpts.DepthThreshold = 0.1 // Default from the library
-	}
-	if responseOpts.Language == "" && responseOpts.LanguageDetectionMode == "" {
-		responseOpts.LanguageDetectionMode = semseg.LangDetectModeFirstSentence
-	}
-	responseOpts.PreNormalizeAbbreviations = req.PreNormalizeAbbreviations == nil || *req.PreNormalizeAbbreviations
-	responseOpts.EnableStopWordRemoval = req.EnableStopWordRemoval == nil || *req.EnableStopWordRemoval
-	responseOpts.EnableStemming = req.EnableStemming == nil || *req.EnableStemming
+	// 2. Create the response options struct to reflect applied defaults.
+	responseOpts := buildResponseOptions(req)
 
-	// 3. Perform segmentation and measure the time
+	// 3. Perform segmentation and measure the time.
 	startTime := time.Now()
 	chunks, err := semseg.Segment(req.Text, opts)
 	duration := time.Since(startTime)
@@ -142,7 +139,46 @@ func handleSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Calculate statistics
+	// 4. Calculate statistics.
+	stats := calculateStats(chunks, duration)
+
+	// 5. Form and send the complete response.
+	response := APIResponse{
+		OptionsUsed: responseOpts,
+		Chunks:      chunks,
+		Stats:       stats,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// buildResponseOptions populates the options structure for the API response,
+// applying the same default logic as the library to show the user what was used.
+func buildResponseOptions(req APIRequest) ResponseOptions {
+	responseOpts := ResponseOptions{
+		MaxTokens:               req.MaxTokens,
+		MinSplitSimilarity:      req.MinSplitSimilarity,
+		DepthThreshold:          req.DepthThreshold,
+		Language:                req.Language,
+		LanguageDetectionMode:   req.LanguageDetectionMode,
+		LanguageDetectionTokens: req.LanguageDetectionTokens,
+	}
+	// Apply default values for clear user feedback
+	if responseOpts.MinSplitSimilarity == 0 && responseOpts.DepthThreshold <= 0 {
+		responseOpts.DepthThreshold = 0.1 // Default from the library
+	}
+	if responseOpts.Language == "" && responseOpts.LanguageDetectionMode == "" {
+		responseOpts.LanguageDetectionMode = semseg.LangDetectModeFirstSentence
+	}
+	responseOpts.PreNormalizeAbbreviations = req.PreNormalizeAbbreviations == nil || *req.PreNormalizeAbbreviations
+	responseOpts.EnableStopWordRemoval = req.EnableStopWordRemoval == nil || *req.EnableStopWordRemoval
+	responseOpts.EnableStemming = req.EnableStemming == nil || *req.EnableStemming
+	return responseOpts
+}
+
+// calculateStats computes performance metrics for the segmentation task.
+func calculateStats(chunks []semseg.Chunk, duration time.Duration) Stats {
 	totalTokens := 0
 	for _, chunk := range chunks {
 		totalTokens += chunk.NumTokens
@@ -156,29 +192,16 @@ func handleSegment(w http.ResponseWriter, r *http.Request) {
 		tokensPerSec = float64(totalTokens) / durationSec
 	}
 
-	stats := Stats{
+	return Stats{
 		TotalChunks:      totalChunks,
 		TotalTokens:      totalTokens,
 		ProcessingTimeMS: float64(duration.Microseconds()) / 1000.0,
 		ChunksPerSecond:  chunksPerSec,
 		TokensPerSecond:  tokensPerSec,
 	}
-
-	// 5. Form and send the complete response
-	response := APIResponse{
-		OptionsUsed: responseOpts,
-		Chunks:      chunks,
-		Stats:       stats,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
 }
 
-type APIError struct {
-	Error string `json:"error"`
-}
-
+// jsonError writes a standard JSON error message to the response.
 func jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -186,8 +209,11 @@ func jsonError(w http.ResponseWriter, message string, code int) {
 }
 
 func main() {
+	// Initialize the handler which contains our shared dependencies.
+	apiHandler := NewAPIHandler()
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/segment", handleSegment)
+	mux.HandleFunc("/segment", apiHandler.handleSegment)
 
 	srv := &http.Server{
 		Addr:              ":8080",

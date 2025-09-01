@@ -7,4 +7,25 @@ services:
         USE_LOCAL: "1"
     ports:
       - "8080:8080"
+    #environment:
+      # URL for your Ollama API. host.docker.internal works on Docker Desktop.
+      #- OLLAMA_URL=http://host.docker.internal:11434
+      # The embedding model to use.
+      # paraphrase-multilingual - Good speed and quality
+      #- OLLAMA_MODEL=paraphrase-multilingual
+      #- OLLAMA_MAX_WORKERS=16
     restart: unless-stopped
+
+  #ollama:
+    #volumes:
+    #  - ollama:/root/.ollama
+    #container_name: ollama
+    #pull_policy: always
+    #tty: true
+    #restart: unless-stopped
+    #image: ollama/ollama:latest
+    #ports:
+    #  - 11434:11434
+
+#volumes:
+  #ollama: {}

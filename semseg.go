@@ -1,11 +1,20 @@
-// ./semseg.go
+// file: ./semseg.go
+
 // Package semseg provides tools for semantically splitting text into meaningful chunks.
 package semseg
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
+	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cmsdko/semseg/internal/lang"
 	"github.com/cmsdko/semseg/internal/text"
@@ -22,6 +31,12 @@ const (
 	LangDetectModePerSentence = "per_sentence"
 	// LangDetectModeFullText detects the language from the entire input text.
 	LangDetectModeFullText = "full_text"
+)
+
+// Constants for Ollama worker pool
+const (
+	OllamaMaxWorkersEnvVar = "OLLAMA_MAX_WORKERS"
+	DefaultOllamaWorkers   = 4
 )
 
 // Chunk represents a single segment of the original text.
@@ -74,12 +89,18 @@ type Options struct {
 	PreNormalizeAbbreviations *bool
 
 	// EnableStopWordRemoval controls whether common "noise words" are removed before similarity calculation.
-	// If nil (default), it is treated as true.
+	// If nil (default), it is treated as true. This option is ignored if using Ollama embeddings.
 	EnableStopWordRemoval *bool
 
 	// EnableStemming controls whether token stemming (reducing words to their root form) is applied.
-	// If nil (default), it is treated as true.
+	// If nil (default), it is treated as true. This option is ignored if using Ollama embeddings.
 	EnableStemming *bool
+
+	// HTTPClient allows providing a custom http.Client for Ollama requests.
+	// If nil, a new client with a default 60-second timeout will be created for each call.
+	// Reusing a single client across multiple calls is highly recommended for performance
+	// as it enables TCP connection reuse.
+	HTTPClient *http.Client
 }
 
 // Segment splits a given text into semantic chunks based on the provided options.
@@ -119,62 +140,231 @@ func Segment(textStr string, opts Options) ([]Chunk, error) {
 		return []Chunk{makeChunk(sentences, len(tokens))}, nil
 	}
 
-	// If no language yet and mode is not per-sentence, follow the original strategy.
-	if globalDetectedLang == "" && opts.LanguageDetectionMode != LangDetectModePerSentence {
-		switch opts.LanguageDetectionMode {
-		case LangDetectModeFirstSentence:
-			globalDetectedLang = lang.DetectLanguage(sentences[0])
-		case LangDetectModeFirstTenSentences:
-			end := 10
-			if len(sentences) < 10 {
-				end = len(sentences)
-			}
-			textForDetection := strings.Join(sentences[:end], " ")
-			globalDetectedLang = lang.DetectLanguage(textForDetection)
-		case LangDetectModeFullText:
-			globalDetectedLang = lang.DetectLanguage(textStr)
-		default:
-			globalDetectedLang = lang.DetectLanguage(sentences[0])
-		}
-	}
-
-	tokenizedSentences := make([][]string, len(sentences))
 	tokenCounts := make([]int, len(sentences))
 	for i, s := range sentences {
-		originalTokens := text.Tokenize(s)
-		tokenCounts[i] = len(originalTokens)
-
-		var detectedLang string
-		if opts.LanguageDetectionMode == LangDetectModePerSentence && opts.Language == "" {
-			detectedLang = lang.DetectLanguage(s)
-		} else {
-			detectedLang = globalDetectedLang
-		}
-
-		sentenceForSimilarity := s
-		if *opts.EnableStopWordRemoval {
-			sentenceForSimilarity = lang.RemoveStopWords(sentenceForSimilarity, detectedLang)
-		}
-
-		tokensForSimilarity := text.Tokenize(sentenceForSimilarity)
-
-		if *opts.EnableStemming {
-			tokensForSimilarity = lang.StemTokens(tokensForSimilarity, detectedLang)
-		}
-
-		tokenizedSentences[i] = tokensForSimilarity
+		tokenCounts[i] = len(text.Tokenize(s))
 	}
 
-	corpus := tfidf.NewCorpus(tokenizedSentences)
-	vectors := make([]map[string]float64, len(sentences))
-	for i, ts := range tokenizedSentences {
-		vectors[i] = corpus.Vectorize(ts)
+	var scores []float64
+
+	// Check environment variables for Ollama
+	ollamaURL := os.Getenv("OLLAMA_URL")
+	ollamaModel := os.Getenv("OLLAMA_MODEL")
+
+	if ollamaURL != "" && ollamaModel != "" {
+		// --- PATH WITH OLLAMA EMBEDDINGS ---
+		// Use the http.Client from options if provided; otherwise, create a default one.
+		// Reusing a client is significantly more performant.
+		client := opts.HTTPClient
+		if client == nil {
+			client = &http.Client{Timeout: 60 * time.Second}
+		}
+		vectors, err := getOllamaEmbeddings(sentences, ollamaURL, ollamaModel, client)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get ollama embeddings: %w", err)
+		}
+		scores = calculateCohesionDense(vectors)
+	} else {
+		// --- EXISTING PATH WITH TF-IDF ---
+		if globalDetectedLang == "" && opts.LanguageDetectionMode != LangDetectModePerSentence {
+			switch opts.LanguageDetectionMode {
+			case LangDetectModeFirstSentence:
+				globalDetectedLang = lang.DetectLanguage(sentences[0])
+			case LangDetectModeFirstTenSentences:
+				end := 10
+				if len(sentences) < 10 {
+					end = len(sentences)
+				}
+				textForDetection := strings.Join(sentences[:end], " ")
+				globalDetectedLang = lang.DetectLanguage(textForDetection)
+			case LangDetectModeFullText:
+				globalDetectedLang = lang.DetectLanguage(textStr)
+			default:
+				globalDetectedLang = lang.DetectLanguage(sentences[0])
+			}
+		}
+
+		tokenizedSentences := make([][]string, len(sentences))
+		for i, s := range sentences {
+			var detectedLang string
+			if opts.LanguageDetectionMode == LangDetectModePerSentence && opts.Language == "" {
+				detectedLang = lang.DetectLanguage(s)
+			} else {
+				detectedLang = globalDetectedLang
+			}
+
+			sentenceForSimilarity := s
+			if *opts.EnableStopWordRemoval {
+				sentenceForSimilarity = lang.RemoveStopWords(sentenceForSimilarity, detectedLang)
+			}
+			tokensForSimilarity := text.Tokenize(sentenceForSimilarity)
+			if *opts.EnableStemming {
+				tokensForSimilarity = lang.StemTokens(tokensForSimilarity, detectedLang)
+			}
+			tokenizedSentences[i] = tokensForSimilarity
+		}
+
+		corpus := tfidf.NewCorpus(tokenizedSentences)
+		vectors := make([]map[string]float64, len(sentences))
+		for i, ts := range tokenizedSentences {
+			vectors[i] = corpus.Vectorize(ts)
+		}
+		scores = calculateCohesion(vectors)
 	}
 
-	scores := calculateCohesion(vectors)
 	boundaryIndices := findBoundaries(scores, opts)
-
 	return buildChunks(sentences, tokenCounts, boundaryIndices, opts.MaxTokens), nil
+}
+
+// Structures for Ollama request and response
+type ollamaRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+type ollamaResponse struct {
+	Embedding []float64 `json:"embedding"`
+	Error     string    `json:"error,omitempty"`
+}
+
+// Structures for worker pool
+type ollamaJob struct {
+	index    int
+	sentence string
+}
+
+type ollamaResult struct {
+	index     int
+	embedding []float64
+	err       error
+}
+
+// getOllamaEmbeddings fetches embeddings for all sentences concurrently using a worker pool.
+func getOllamaEmbeddings(sentences []string, ollamaURL, ollamaModel string, client *http.Client) ([][]float64, error) {
+	numSentences := len(sentences)
+	if numSentences == 0 {
+		return [][]float64{}, nil
+	}
+
+	// Determine the number of workers from environment variable or default.
+	numWorkersStr := os.Getenv(OllamaMaxWorkersEnvVar)
+	numWorkers, err := strconv.Atoi(numWorkersStr)
+	if err != nil || numWorkers <= 0 {
+		numWorkers = DefaultOllamaWorkers
+	}
+	if numWorkers > numSentences {
+		numWorkers = numSentences
+	}
+
+	jobs := make(chan ollamaJob, numSentences)
+	results := make(chan ollamaResult, numSentences)
+	url := strings.TrimSuffix(ollamaURL, "/") + "/api/embeddings"
+
+	var wg sync.WaitGroup
+	// Start workers.
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go ollamaWorker(&wg, client, jobs, results, url, ollamaModel)
+	}
+
+	// Send jobs.
+	for i, sentence := range sentences {
+		jobs <- ollamaJob{index: i, sentence: sentence}
+	}
+	close(jobs)
+
+	// Wait for all workers to finish.
+	wg.Wait()
+	close(results)
+
+	// Collect results.
+	vectors := make([][]float64, numSentences)
+	for result := range results {
+		if result.err != nil {
+			// Fail fast on the first error.
+			return nil, result.err
+		}
+		vectors[result.index] = result.embedding
+	}
+
+	return vectors, nil
+}
+
+// ollamaWorker is a worker function that processes embedding requests from the jobs channel.
+func ollamaWorker(wg *sync.WaitGroup, client *http.Client, jobs <-chan ollamaJob, results chan<- ollamaResult, url, model string) {
+	defer wg.Done()
+	for job := range jobs {
+		reqBody, err := json.Marshal(ollamaRequest{Model: model, Prompt: job.sentence})
+		if err != nil {
+			results <- ollamaResult{index: job.index, err: fmt.Errorf("failed to marshal ollama request for sentence %d: %w", job.index, err)}
+			continue
+		}
+
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
+		if err != nil {
+			results <- ollamaResult{index: job.index, err: fmt.Errorf("failed to create http request for sentence %d: %w", job.index, err)}
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			results <- ollamaResult{index: job.index, err: fmt.Errorf("failed to call ollama api for sentence %d: %w", job.index, err)}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			results <- ollamaResult{index: job.index, err: fmt.Errorf("ollama api returned non-200 status for sentence %d: %s", job.index, resp.Status)}
+			resp.Body.Close()
+			continue
+		}
+
+		var ollamaResp ollamaResponse
+		if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+			results <- ollamaResult{index: job.index, err: fmt.Errorf("failed to decode ollama response for sentence %d: %w", job.index, err)}
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+
+		if ollamaResp.Error != "" {
+			results <- ollamaResult{index: job.index, err: fmt.Errorf("ollama api returned error for sentence %d: %s", job.index, ollamaResp.Error)}
+			continue
+		}
+
+		results <- ollamaResult{index: job.index, embedding: ollamaResp.Embedding}
+	}
+}
+
+// cosineSimilarityDense calculates the cosine similarity between two dense vectors.
+func cosineSimilarityDense(v1, v2 []float64) float64 {
+	if len(v1) != len(v2) || len(v1) == 0 {
+		return 0.0
+	}
+
+	var dot, normA, normB float64
+	for i := 0; i < len(v1); i++ {
+		dot += v1[i] * v2[i]
+		normA += v1[i] * v1[i]
+		normB += v2[i] * v2[i]
+	}
+
+	if normA == 0 || normB == 0 {
+		return 0.0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// calculateCohesionDense calculates cohesion scores based on dense vectors.
+func calculateCohesionDense(vectors [][]float64) []float64 {
+	if len(vectors) < 2 {
+		return []float64{}
+	}
+	scores := make([]float64, len(vectors)-1)
+	for i := 0; i < len(vectors)-1; i++ {
+		scores[i] = cosineSimilarityDense(vectors[i], vectors[i+1])
+	}
+	return scores
 }
 
 func validateOptions(opts Options) error {
@@ -212,6 +402,9 @@ func setDefaultOptions(opts *Options) {
 
 // calculateCohesion computes the cosine similarity between adjacent sentence vectors.
 func calculateCohesion(vectors []map[string]float64) []float64 {
+	if len(vectors) < 2 {
+		return []float64{}
+	}
 	scores := make([]float64, len(vectors)-1)
 	for i := 0; i < len(vectors)-1; i++ {
 		scores[i] = tfidf.CosineSimilarity(vectors[i], vectors[i+1])
@@ -219,44 +412,35 @@ func calculateCohesion(vectors []map[string]float64) []float64 {
 	return scores
 }
 
-// findBoundaries identifies sentence boundaries based on similarity scores and options
-func findBoundaries(sentences []string, scores []float64, opts Options) []bool {
-	boundaries := make([]bool, len(scores))
+// findBoundaries identifies boundaries from similarity scores and options.
+// Returns a map where a key of `i` means a split after sentence `i`.
+func findBoundaries(scores []float64, opts Options) map[int]bool {
+	boundaries := make(map[int]bool)
+	if len(scores) == 0 {
+		return boundaries
+	}
 
-	for i := 1; i < len(scores)-1; i++ {
-		// Check for local minimum
-		if scores[i] <= scores[i-1] && scores[i] <= scores[i+1] {
-			// Apply thresholds
-			if (opts.MinSplitSimilarity == 0 || scores[i] <= opts.MinSplitSimilarity) &&
-				(opts.DepthThreshold == 0 || (math.Min(scores[i-1], scores[i+1])-scores[i] >= opts.DepthThreshold)) {
+	for i := 0; i < len(scores); i++ {
+		// Fixed threshold method
+		if opts.MinSplitSimilarity > 0 {
+			if scores[i] < opts.MinSplitSimilarity {
 				boundaries[i] = true
 			}
+			continue
 		}
-	}
 
-	// Fallback: if no local minima found and thresholds disabled, cut at global minimum
-	if opts.MinSplitSimilarity == 0 && opts.DepthThreshold == 0 && len(scores) > 0 {
-		found := false
-		for _, b := range boundaries {
-			if b {
-				found = true
-				break
-			}
-		}
-		if !found {
-			minIdx := 0
-			minVal := scores[0]
-			for i := 1; i < len(scores); i++ {
-				// use <= to make behavior stable on flat minima
-				if scores[i] <= minVal {
-					minVal = scores[i]
-					minIdx = i
+		// Local minima detection method
+		if i > 0 && i < len(scores)-1 {
+			isLocalMinimum := scores[i] < scores[i-1] && scores[i] < scores[i+1]
+			if isLocalMinimum {
+				// Calculate the "depth" of the dip
+				depth := (scores[i-1]+scores[i+1])/2 - scores[i]
+				if depth >= opts.DepthThreshold {
+					boundaries[i] = true
 				}
 			}
-			boundaries[minIdx] = true
 		}
 	}
-
 	return boundaries
 }
 
@@ -273,15 +457,21 @@ func buildChunks(
 
 	for i, sentence := range sentences {
 		sentenceTokens := tokenCounts[i]
+
+		// Handle oversized single sentences
 		if sentenceTokens > maxTokens {
+			// First, finalize the current chunk if it has content
 			if len(currentChunkSentences) > 0 {
 				chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
 			}
+			// Add the oversized sentence as its own chunk
 			chunks = append(chunks, makeChunk([]string{sentence}, sentenceTokens))
+			// Reset for the next chunk
 			currentChunkSentences = []string{}
 			currentChunkTokens = 0
 			continue
 		}
+
 		isSemanticBoundary := i > 0 && boundaryIndices[i-1]
 		tokenLimitExceeded := currentChunkTokens+sentenceTokens > maxTokens
 
@@ -295,6 +485,7 @@ func buildChunks(
 		currentChunkTokens += sentenceTokens
 	}
 
+	// Add the last remaining chunk if it exists
 	if len(currentChunkSentences) > 0 {
 		chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
 	}
