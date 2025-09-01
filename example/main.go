@@ -9,142 +9,195 @@ import (
 	"github.com/cmsdko/semseg"
 )
 
-// APIRequest represents the JSON payload structure expected by the /segment endpoint.
-// It contains the text to be segmented along with optional configuration parameters
-// for controlling the segmentation behavior.
+// APIRequest represents the JSON structure expected by the /segment endpoint.
+// It contains the text to be segmented and all optional configuration parameters.
 type APIRequest struct {
-	// Text is the input string that will be semantically segmented into chunks.
-	// This field is required and should contain the full text to process.
+	// Text is the input string for semantic segmentation. This field is required.
 	Text string `json:"text"`
 
-	// MaxTokens defines the maximum number of tokens allowed per chunk.
-	// This is a hard limit - no chunk will exceed this size unless a single
-	// sentence is larger than the limit (in which case it gets its own chunk).
-	// This field is required and must be greater than 0.
+	// MaxTokens is the hard limit on the number of tokens in a chunk. This field is required and must be > 0.
 	MaxTokens int `json:"max_tokens"`
 
-	// MinSplitSimilarity is an optional threshold (0.0 to 1.0) for splitting.
-	// If the cosine similarity between adjacent sentences falls below this value,
-	// a split will be considered at that point. If set to 0 (default), the algorithm
-	// will use the more sophisticated local minima detection method instead.
+	// MinSplitSimilarity is the cosine similarity threshold (0.0 to 1.0) for splitting.
+	// If 0 (the default), the local minima search method is used.
 	MinSplitSimilarity float64 `json:"min_split_similarity,omitempty"`
 
-	// DepthThreshold is used by the default boundary detection method when
-	// MinSplitSimilarity is 0. It defines the minimum "depth" of a similarity
-	// dip to be considered a valid split point. This prevents minor fluctuations
-	// from causing unnecessary splits. Default is 0.1 if not specified.
+	// DepthThreshold is used when MinSplitSimilarity=0. It defines the minimum "depth"
+	// of the similarity dip for a split point. Defaults to 0.1.
 	DepthThreshold float64 `json:"depth_threshold,omitempty"`
 
-	// Language can be provided to skip auto-detection and force a specific language.
-	// Example: "english", "russian". If omitted, language is detected automatically.
+	// Language forces a specific language (e.g., "english"), skipping auto-detection.
 	Language string `json:"language,omitempty"`
 
-	// EnableStopWordRemoval controls the removal of noise words. Defaults to true.
-	// Set to false to disable.
+	// LanguageDetectionMode is the strategy for language auto-detection if Language is not set.
+	// Possible values: "first_sentence", "first_ten_sentences", "per_sentence", "full_text".
+	LanguageDetectionMode string `json:"language_detection_mode,omitempty"`
+
+	// LanguageDetectionTokens enables early language detection based on the first N tokens.
+	// If > 0, the language is detected before splitting into sentences.
+	LanguageDetectionTokens int `json:"language_detection_tokens,omitempty"`
+
+	// PreNormalizeAbbreviations normalizes abbreviations with periods (e.g., U.S.A. -> USA) before sentence splitting.
+	// Defaults to true.
+	PreNormalizeAbbreviations *bool `json:"pre_normalize_abbreviations,omitempty"`
+
+	// EnableStopWordRemoval controls the removal of stop words. Defaults to true.
 	EnableStopWordRemoval *bool `json:"enable_stop_word_removal,omitempty"`
 
-	// EnableStemming controls word stemming. Defaults to true.
-	// Set to false to disable.
+	// EnableStemming controls stemming (reducing words to their root form). Defaults to true.
 	EnableStemming *bool `json:"enable_stemming,omitempty"`
 }
 
-// handleSegment processes HTTP requests to the /segment endpoint.
-// It expects a POST request with JSON payload containing text and segmentation parameters,
-// and returns the segmented chunks as JSON response.
+// ResponseOptions reflects the settings that were actually used for segmentation,
+// including the default values applied by the server.
+type ResponseOptions struct {
+	MaxTokens                   int     `json:"max_tokens"`
+	MinSplitSimilarity          float64 `json:"min_split_similarity"`
+	DepthThreshold              float64 `json:"depth_threshold"`
+	Language                    string  `json:"language"`
+	LanguageDetectionMode       string  `json:"language_detection_mode"`
+	LanguageDetectionTokens     int     `json:"language_detection_tokens"`
+	PreNormalizeAbbreviations   bool    `json:"pre_normalize_abbreviations"`
+	EnableStopWordRemoval       bool    `json:"enable_stop_word_removal"`
+	EnableStemming              bool    `json:"enable_stemming"`
+}
+
+// Stats contains performance statistics for a single request.
+type Stats struct {
+	TotalChunks      int     `json:"total_chunks"`
+	TotalTokens      int     `json:"total_tokens"`
+	ProcessingTimeMS float64 `json:"processing_time_ms"`
+	ChunksPerSecond  float64 `json:"chunks_per_second"`
+	TokensPerSecond  float64 `json:"tokens_per_second"`
+}
+
+// APIResponse is the complete response structure returned by the /segment endpoint.
+type APIResponse struct {
+	OptionsUsed ResponseOptions `json:"options_used"`
+	Chunks      []semseg.Chunk  `json:"chunks"`
+	Stats       Stats           `json:"stats"`
+}
+
+// handleSegment handles HTTP POST requests to the /segment endpoint.
+// It accepts a JSON payload with text and parameters, and returns the segmented chunks,
+// the settings used, and performance statistics.
 func handleSegment(w http.ResponseWriter, r *http.Request) {
-	// Only accept POST requests - segmentation requires request body data
 	if r.Method != http.MethodPost {
 		jsonError(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 
-	// Limit request body size to 1MB to prevent memory exhaustion attacks
-	// This creates a wrapper around the request body that enforces the size limit
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-
-	// Parse the JSON request body into our APIRequest struct
 	var req APIRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "Bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// Validate required fields - MaxTokens must be positive
-	// The semseg library will also validate this, but we check early for better error messages
 	if req.MaxTokens <= 0 {
 		jsonError(w, "max_tokens must be > 0", http.StatusBadRequest)
 		return
 	}
 
-	// Configure the segmentation options based on the request parameters.
-	// The library handles default values internally for optional parameters.
+	// 1. Create options for the semseg library based on the request
 	opts := semseg.Options{
-		MaxTokens:             req.MaxTokens,
-		MinSplitSimilarity:    req.MinSplitSimilarity,
-		DepthThreshold:        req.DepthThreshold,
-		Language:              req.Language,
-		EnableStopWordRemoval: req.EnableStopWordRemoval,
-		EnableStemming:        req.EnableStemming,
+		MaxTokens:                 req.MaxTokens,
+		MinSplitSimilarity:        req.MinSplitSimilarity,
+		DepthThreshold:            req.DepthThreshold,
+		Language:                  req.Language,
+		LanguageDetectionMode:     req.LanguageDetectionMode,
+		LanguageDetectionTokens:   req.LanguageDetectionTokens,
+		PreNormalizeAbbreviations: req.PreNormalizeAbbreviations,
+		EnableStopWordRemoval:     req.EnableStopWordRemoval,
+		EnableStemming:            req.EnableStemming,
 	}
 
-	// Perform the actual text segmentation using the semseg library
+	// 2. Create the response options struct, applying default value logic
+	// so the user can see exactly which settings were used.
+	responseOpts := ResponseOptions{
+		MaxTokens:               req.MaxTokens,
+		MinSplitSimilarity:      req.MinSplitSimilarity,
+		DepthThreshold:          req.DepthThreshold,
+		Language:                req.Language,
+		LanguageDetectionMode:   req.LanguageDetectionMode,
+		LanguageDetectionTokens: req.LanguageDetectionTokens,
+	}
+	// Apply default values
+	if responseOpts.MinSplitSimilarity == 0 && responseOpts.DepthThreshold <= 0 {
+		responseOpts.DepthThreshold = 0.1 // Default from the library
+	}
+	if responseOpts.Language == "" && responseOpts.LanguageDetectionMode == "" {
+		responseOpts.LanguageDetectionMode = semseg.LangDetectModeFirstSentence
+	}
+	responseOpts.PreNormalizeAbbreviations = req.PreNormalizeAbbreviations == nil || *req.PreNormalizeAbbreviations
+	responseOpts.EnableStopWordRemoval = req.EnableStopWordRemoval == nil || *req.EnableStopWordRemoval
+	responseOpts.EnableStemming = req.EnableStemming == nil || *req.EnableStemming
+
+	// 3. Perform segmentation and measure the time
+	startTime := time.Now()
 	chunks, err := semseg.Segment(req.Text, opts)
+	duration := time.Since(startTime)
+
 	if err != nil {
-		// Internal errors indicate issues with the segmentation algorithm
 		jsonError(w, "Internal server error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Return successful response with the segmented chunks as JSON
+	// 4. Calculate statistics
+	totalTokens := 0
+	for _, chunk := range chunks {
+		totalTokens += chunk.NumTokens
+	}
+	totalChunks := len(chunks)
+	durationSec := duration.Seconds()
+
+	var chunksPerSec, tokensPerSec float64
+	if durationSec > 0 {
+		chunksPerSec = float64(totalChunks) / durationSec
+		tokensPerSec = float64(totalTokens) / durationSec
+	}
+
+	stats := Stats{
+		TotalChunks:      totalChunks,
+		TotalTokens:      totalTokens,
+		ProcessingTimeMS: float64(duration.Microseconds()) / 1000.0,
+		ChunksPerSecond:  chunksPerSec,
+		TokensPerSecond:  tokensPerSec,
+	}
+
+	// 5. Form and send the complete response
+	response := APIResponse{
+		OptionsUsed: responseOpts,
+		Chunks:      chunks,
+		Stats:       stats,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(chunks)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
-// APIError represents the structure of error responses returned by the API.
-// All error responses follow this consistent format for easier client handling.
 type APIError struct {
 	Error string `json:"error"`
 }
 
-// jsonError is a helper function that sends a standardized JSON error response.
-// It sets the appropriate HTTP status code and Content-Type header before
-// encoding the error message as JSON.
 func jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(APIError{Error: message})
 }
 
-// main initializes and starts the HTTP server with proper configuration
-// for production use, including timeouts and security settings.
 func main() {
-	// Create a new HTTP router and register our segmentation endpoint
 	mux := http.NewServeMux()
 	mux.HandleFunc("/segment", handleSegment)
 
-	// Configure the HTTP server with security-focused timeout settings
 	srv := &http.Server{
-		Addr:    ":8080", // Listen on port 8080 for incoming connections
-		Handler: mux,     // Use our configured router
-
-		// ReadHeaderTimeout prevents clients from sending headers too slowly
-		// This helps prevent Slowloris-style attacks
+		Addr:              ":8080",
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-
-		// ReadTimeout is the maximum time allowed to read the entire request,
-		// including the body. This prevents clients from holding connections open
-		ReadTimeout: 10 * time.Second,
-
-		// WriteTimeout is the maximum time allowed to write the response.
-		// This prevents slow clients from keeping connections open indefinitely
-		WriteTimeout: 10 * time.Second,
-
-		// MaxHeaderBytes limits the size of request headers to prevent
-		// memory exhaustion from maliciously large headers (1MB limit)
-		MaxHeaderBytes: 1 << 20,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
-	// Start the HTTP server and log any startup issues
 	log.Println("Starting server on :8080...")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Could not start server: %s\n", err)

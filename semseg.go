@@ -11,6 +11,18 @@ import (
 	"github.com/cmsdko/semseg/internal/tfidf"
 )
 
+// Constants for LanguageDetectionMode.
+const (
+	// LangDetectModeFirstSentence detects the language from the first sentence only. This is the default mode.
+	LangDetectModeFirstSentence = "first_sentence"
+	// LangDetectModeFirstTenSentences detects the language from the first 10 sentences.
+	LangDetectModeFirstTenSentences = "first_ten_sentences"
+	// LangDetectModePerSentence detects the language for each sentence individually.
+	LangDetectModePerSentence = "per_sentence"
+	// LangDetectModeFullText detects the language from the entire input text.
+	LangDetectModeFullText = "full_text"
+)
+
 // Chunk represents a single segment of the original text.
 type Chunk struct {
 	// Text is the combined string of all sentences in the chunk.
@@ -42,17 +54,29 @@ type Options struct {
 	DepthThreshold float64
 
 	// Language forces the segmenter to use a specific language (e.g., "english", "russian"),
-	// skipping the language auto-detection step.
-	// If empty (default), the language will be auto-detected from the input text.
+	// skipping the language auto-detection step. If set, this option overrides LanguageDetectionMode.
+	// If empty (default), the language will be auto-detected based on LanguageDetectionMode.
 	Language string
 
+	// LanguageDetectionMode specifies the strategy for automatic language detection when Language is not set.
+	// Use one of the LangDetectMode* constants (e.g., LangDetectModeFirstSentence).
+	// If empty, it defaults to LangDetectModeFirstSentence.
+	LanguageDetectionMode string
+
+	// LanguageDetectionTokens enables early detection by the first N tokens.
+	// If > 0 and Language is empty and mode is not per-sentence, language is detected
+	// from the first N tokens before sentence splitting.
+	LanguageDetectionTokens int
+
+	// PreNormalizeAbbreviations controls whether dotted abbreviations/acronyms are normalized
+	// (dots removed) before sentence splitting. If nil (default), it is treated as true.
+	PreNormalizeAbbreviations *bool
+
 	// EnableStopWordRemoval controls whether common "noise words" are removed before similarity calculation.
-	// Disabling this may reduce segmentation quality but can be useful for specific use cases.
 	// If nil (default), it is treated as true.
 	EnableStopWordRemoval *bool
 
 	// EnableStemming controls whether token stemming (reducing words to their root form) is applied.
-	// Disabling this can be useful for languages where stemming is aggressive or not needed.
 	// If nil (default), it is treated as true.
 	EnableStemming *bool
 }
@@ -64,6 +88,27 @@ func Segment(textStr string, opts Options) ([]Chunk, error) {
 	}
 	setDefaultOptions(&opts)
 
+	// --- Early language selection (explicit or by first N tokens) before any normalization/splitting ---
+	var globalDetectedLang string
+	if opts.Language != "" {
+		globalDetectedLang = opts.Language
+	} else if opts.LanguageDetectionTokens > 0 && opts.LanguageDetectionMode != LangDetectModePerSentence {
+		toks := text.Tokenize(textStr)
+		n := opts.LanguageDetectionTokens
+		if n > len(toks) {
+			n = len(toks)
+		}
+		// Reuse string-based detector for simplicity.
+		globalDetectedLang = lang.DetectLanguage(strings.Join(toks[:n], " "))
+	}
+
+	// --- Optional abbreviation normalization before sentence splitting ---
+	if *opts.PreNormalizeAbbreviations {
+		// Use already chosen language if available, otherwise empty which falls back inside.
+		textStr = lang.NormalizeAbbreviations(textStr, globalDetectedLang)
+	}
+
+	// Split into sentences after normalization.
 	sentences := text.SplitSentences(textStr)
 	if len(sentences) == 0 {
 		return []Chunk{}, nil
@@ -73,23 +118,38 @@ func Segment(textStr string, opts Options) ([]Chunk, error) {
 		return []Chunk{makeChunk(sentences, len(tokens))}, nil
 	}
 
-	// Determine the language once: either from options or by auto-detecting the entire text.
-	var detectedLang string
-	if opts.Language != "" {
-		detectedLang = opts.Language
-	} else {
-		detectedLang = lang.DetectLanguage(textStr)
+	// If no language yet and mode is not per-sentence, follow the original strategy.
+	if globalDetectedLang == "" && opts.LanguageDetectionMode != LangDetectModePerSentence {
+		switch opts.LanguageDetectionMode {
+		case LangDetectModeFirstSentence:
+			globalDetectedLang = lang.DetectLanguage(sentences[0])
+		case LangDetectModeFirstTenSentences:
+			end := 10
+			if len(sentences) < 10 {
+				end = len(sentences)
+			}
+			textForDetection := strings.Join(sentences[:end], " ")
+			globalDetectedLang = lang.DetectLanguage(textForDetection)
+		case LangDetectModeFullText:
+			globalDetectedLang = lang.DetectLanguage(textStr)
+		default:
+			globalDetectedLang = lang.DetectLanguage(sentences[0])
+		}
 	}
 
 	tokenizedSentences := make([][]string, len(sentences))
 	tokenCounts := make([]int, len(sentences))
 	for i, s := range sentences {
-		// Calculate token count for chunking from the *original* sentence.
-		// This ensures the MaxTokens limit is respected based on what the user provided.
 		originalTokens := text.Tokenize(s)
 		tokenCounts[i] = len(originalTokens)
 
-		// For similarity calculation, optionally remove stop words and apply stemming.
+		var detectedLang string
+		if opts.LanguageDetectionMode == LangDetectModePerSentence && opts.Language == "" {
+			detectedLang = lang.DetectLanguage(s)
+		} else {
+			detectedLang = globalDetectedLang
+		}
+
 		sentenceForSimilarity := s
 		if *opts.EnableStopWordRemoval {
 			sentenceForSimilarity = lang.RemoveStopWords(sentenceForSimilarity, detectedLang)
@@ -124,13 +184,17 @@ func validateOptions(opts Options) error {
 }
 
 func setDefaultOptions(opts *Options) {
-	// Default value logic for DepthThreshold.
+	// Default for DepthThreshold when MinSplitSimilarity is 0
 	if opts.MinSplitSimilarity == 0 && opts.DepthThreshold < 0 {
 		opts.DepthThreshold = 0.1
 	}
 
-	// Set default values for new boolean flags if they were not provided.
-	// A nil pointer indicates the user did not specify the value, so we default to true.
+	// Default for LanguageDetectionMode
+	if opts.Language == "" && opts.LanguageDetectionMode == "" {
+		opts.LanguageDetectionMode = LangDetectModeFirstSentence
+	}
+
+	// Default boolean flags
 	if opts.EnableStopWordRemoval == nil {
 		t := true
 		opts.EnableStopWordRemoval = &t
@@ -138,6 +202,10 @@ func setDefaultOptions(opts *Options) {
 	if opts.EnableStemming == nil {
 		t := true
 		opts.EnableStemming = &t
+	}
+	if opts.PreNormalizeAbbreviations == nil {
+		t := true
+		opts.PreNormalizeAbbreviations = &t
 	}
 }
 
@@ -158,7 +226,6 @@ func findBoundaries(scores []float64, opts Options) map[int]bool {
 	}
 
 	for i := 0; i < len(scores); i++ {
-		// Method 1: Fixed threshold - split when similarity drops below threshold
 		if opts.MinSplitSimilarity > 0 {
 			if scores[i] < opts.MinSplitSimilarity {
 				boundaries[i] = true
@@ -166,16 +233,9 @@ func findBoundaries(scores []float64, opts Options) map[int]bool {
 			continue
 		}
 
-		// Method 2: Local minima detection (default, more robust)
-		// Only consider interior points to ensure we have neighbors on both sides
 		if i > 0 && i < len(scores)-1 {
-			// A local minimum occurs when a point is lower than both neighbors
 			isLocalMinimum := scores[i] < scores[i-1] && scores[i] < scores[i+1]
 			if isLocalMinimum {
-				// Calculate "depth" of the minimum to filter out insignificant dips:
-				// - Take average of neighboring similarity scores
-				// - Subtract the minimum value to get the depth of the dip
-				// - Only accept minima that are "deep enough" to avoid noise
 				depth := (scores[i-1]+scores[i+1])/2 - scores[i]
 				if depth >= opts.DepthThreshold {
 					boundaries[i] = true
@@ -199,8 +259,6 @@ func buildChunks(
 
 	for i, sentence := range sentences {
 		sentenceTokens := tokenCounts[i]
-		// Handle oversized sentences: if a single sentence exceeds maxTokens,
-		// place it in its own chunk regardless of semantic boundaries
 		if sentenceTokens > maxTokens {
 			if len(currentChunkSentences) > 0 {
 				chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
@@ -210,26 +268,19 @@ func buildChunks(
 			currentChunkTokens = 0
 			continue
 		}
-		// Check if we should split at this position:
-		// - isSemanticBoundary uses [i-1] because boundary indices represent gaps BETWEEN sentences
-		//   (i.e., boundaryIndices[j] means there's a boundary after sentence j, before sentence j+1)
-		// - tokenLimitExceeded ensures we never exceed MaxTokens per chunk
 		isSemanticBoundary := i > 0 && boundaryIndices[i-1]
 		tokenLimitExceeded := currentChunkTokens+sentenceTokens > maxTokens
 
-		// Start a new chunk if we have content and hit either condition
 		if len(currentChunkSentences) > 0 && (isSemanticBoundary || tokenLimitExceeded) {
 			chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
 			currentChunkSentences = []string{}
 			currentChunkTokens = 0
 		}
 
-		// Add current sentence to the chunk
 		currentChunkSentences = append(currentChunkSentences, sentence)
 		currentChunkTokens += sentenceTokens
 	}
 
-	// Don't forget the last chunk if it has content
 	if len(currentChunkSentences) > 0 {
 		chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
 	}

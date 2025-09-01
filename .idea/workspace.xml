@@ -4,13 +4,34 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="6fdca462-4332-4108-820b-63be069fe963" name="Changes" comment="" />
+    <list default="true" id="6fdca462-4332-4108-820b-63be069fe963" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/internal/lang/abbrev.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/example/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/example/main.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/data/stopwords.json" beforeDir="false" afterPath="$PROJECT_DIR$/internal/lang/data/stopwords.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/lang/lang.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/lang/lang.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/lang/lang_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/lang/lang_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/text/text.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/text/text.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/text/text_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/text/text_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/tfidf/tfidf.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/tfidf/tfidf.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/tfidf/tfidf_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/tfidf/tfidf_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/semseg.go" beforeDir="false" afterPath="$PROJECT_DIR$/semseg.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/semseg_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/semseg_test.go" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
-  <component name="GOROOT" url="file://$USER_HOME$/sdk/go1.20.14" />
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Go File" />
+      </list>
+    </option>
+  </component>
+  <component name="GOROOT" url="file:///opt/homebrew/opt/go/libexec" />
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
@@ -22,32 +43,34 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.GoLinterPluginOnboarding&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.GoLinterPluginStorageMigration&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.go.formatter.settings.were.checked&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.go.migrated.go.modules.settings&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.go.modules.go.list.on.any.changes.was.set&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
-    &quot;go.sdk.automatically.set&quot;: &quot;true&quot;,
-    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
-    &quot;last_opened_file_path&quot;: &quot;/Users/aleksandrmakarenko/code/semseg&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;ml.llm.LLMThirdPartyAiProvidersConfigurable&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "DefaultGoTemplateProperty": "Go File",
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.GoLinterPluginOnboarding": "true",
+    "RunOnceActivity.GoLinterPluginStorageMigration": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.go.formatter.settings.were.checked": "true",
+    "RunOnceActivity.go.migrated.go.modules.settings": "true",
+    "RunOnceActivity.go.modules.go.list.on.any.changes.was.set": "true",
+    "git-widget-placeholder": "main",
+    "go.import.settings.migrated": "true",
+    "go.sdk.automatically.set": "true",
+    "junie.onboarding.icon.badge.shown": "true",
+    "last_opened_file_path": "/Users/aleksandrmakarenko/code/semseg",
+    "node.js.detected.package.eslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "ml.llm.LLMThirdPartyAiProvidersConfigurable",
+    "to.speed.mode.migration.done": "true"
   }
-}</component>
+}]]></component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-gosdk-3b128438d3f6-4b567d62c776-org.jetbrains.plugins.go.sharedIndexes.bundled-GO-251.25410.140" />
-        <option value="bundled-js-predefined-d6986cc7102b-6a121458b545-JavaScript-GO-251.25410.140" />
+        <option value="bundled-gosdk-f466f9b0953e-3d2cccfc42a2-org.jetbrains.plugins.go.sharedIndexes.bundled-GO-252.23892.530" />
+        <option value="bundled-js-predefined-d6986cc7102b-e03c56caf84a-JavaScript-GO-252.23892.530" />
       </set>
     </attachedChunks>
   </component>
@@ -63,6 +86,17 @@
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>

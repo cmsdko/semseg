@@ -1,9 +1,9 @@
-// ./internal/lang/lang.go
 package lang
 
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -14,33 +14,40 @@ import (
 
 // --- DATA STRUCTURES ---
 
-// StemmingRules defines the stemming configuration for a language.
+// StemmingRules defines minimal, affix-based stemming configuration for a language.
+// The goal is lightweight normalization, not linguistic accuracy.
 type StemmingRules struct {
-	Prefixes []string `json:"prefixes"`
-	Suffixes []string `json:"suffixes"`
-	MinLen   int      `json:"min_len"`
-	OneShot  bool     `json:"one_shot"`
+	Prefixes []string `json:"prefixes"` // checked longest-first
+	Suffixes []string `json:"suffixes"` // checked longest-first
+	MinLen   int      `json:"min_len"`  // do not stem if resulting token would be shorter than this
+	OneShot  bool     `json:"one_shot"` // if true, stop after the first successful prefix/suffix removal
 }
 
-// LanguageData holds all data for a single language from the JSON file.
+// LanguageData groups all language resources loaded from JSON.
 type LanguageData struct {
-	Stopwords []string      `json:"stopwords"`
-	Stemming  StemmingRules `json:"stemming"`
+	Stopwords    []string      `json:"stopwords"`
+	Stemming     StemmingRules `json:"stemming"`
+	Contractions []string      `json:"contractions"` // dotted contractions for abbreviation normalization
 }
 
 // --- EMBEDDED DATA ---
 
-//go:embed ../data/stopwords.json
+//go:embed data/stopwords.json
 var stopWordsJSON []byte
 
-// --- CONSTANTS AND GLOBAL VARIABLES ---
+// --- CONSTANTS AND GLOBAL STATE ---
 
 const (
-	LangUnknown         = "unknown"
+	// LangUnknown is returned when language detection is inconclusive.
+	LangUnknown = "unknown"
+
+	// ConfidenceThreshold is the minimal count of stopword "hits" for a language
+	// to be considered at all. Below this, the input is treated as unknown.
+	// Small, short, or mixed-language inputs often won't reach this threshold.
 	ConfidenceThreshold = 2
 )
 
-// Script constants to avoid typos in the code.
+// Script constants used to narrow language candidates quickly via Unicode script checks.
 const (
 	scriptLatin      = "Latin"
 	scriptCyrillic   = "Cyrillic"
@@ -48,35 +55,48 @@ const (
 	scriptGreek      = "Greek"
 	scriptDevanagari = "Devanagari"
 	scriptHebrew     = "Hebrew"
-	scriptHan        = "Han"
-	scriptHiragana   = "Hiragana"
-	scriptKatakana   = "Katakana"
-	scriptHangul     = "Hangul"
+	scriptHan        = "Han"      // Chinese characters
+	scriptHiragana   = "Hiragana" // Japanese
+	scriptKatakana   = "Katakana" // Japanese
+	scriptHangul     = "Hangul"   // Korean
 )
 
 var (
-	invertedIndexMask   map[string]uint64
-	stopWordsByLang     map[string]map[string]struct{}
-	stemmingRulesByLang map[string]StemmingRules
-	languageMasks       map[string]uint64
+	// invertedIndexMask maps a token to a bitmask of languages that list it as a stopword.
+	// Bit positions are assigned per language in languageMasks.
+	invertedIndexMask map[string]uint64
 
-	// langsByScript stores which languages use a specific script, built at init time.
+	// stopWordsByLang stores stopword sets per language (for fast membership checks).
+	stopWordsByLang map[string]map[string]struct{}
+
+	// stemmingRulesByLang stores per-language stemming rules.
+	stemmingRulesByLang map[string]StemmingRules
+
+	// languageMasks assigns each supported language a unique bit in a 64-bit mask.
+	// This implementation intentionally caps at 64 languages for simplicity/perf.
+	languageMasks map[string]uint64
+
+	// contractionsByLang stores dotted contractions per language (e.g., "e.g.", "т.е.").
+	contractionsByLang map[string][]string
+
+	// langsByScript lists languages mapped to a detected script (heuristic; built from stopwords).
 	// Example: "Cyrillic" -> ["russian", "ukrainian"]
 	langsByScript map[string][]string
-	// allLangsList is a simple slice of all loaded languages for fallback.
+
+	// allLangsList is a stable list of all loaded languages (fallback when script is unknown).
 	allLangsList []string
 )
 
 // --- INITIALIZATION (runs once at startup) ---
 
 func init() {
-	// 1. Load and parse stop words and stemming rules from the embedded JSON file
+	// Load language resources from the embedded JSON blob.
 	var rawData map[string]LanguageData
 	if err := json.Unmarshal(stopWordsJSON, &rawData); err != nil {
-		log.Fatalf("FATAL: Failed to parse embedded stopwords.json: %v", err)
+		panic(fmt.Sprintf("semseg: invalid embedded stopwords.json: %v", err))
 	}
 
-	// 2. Dynamically determine the list of supported languages from the JSON keys.
+	// Build a stable, sorted list of languages that actually have stopwords.
 	var languageOrder []string
 	for lang, data := range rawData {
 		if len(data.Stopwords) > 0 {
@@ -84,36 +104,36 @@ func init() {
 		}
 	}
 	sort.Strings(languageOrder)
-	allLangsList = languageOrder // Save for fallback cases
+	allLangsList = languageOrder
 
+	// Hard cap: uint64 bitmask allows at most 64 languages.
 	if len(languageOrder) > 64 {
 		log.Fatalf("FATAL: Cannot support more than 64 languages due to uint64 bitmask limit. Found %d.", len(languageOrder))
 	}
 
-	// 3. Create masks for each dynamically discovered language
+	// Assign bit positions for each language.
 	languageMasks = make(map[string]uint64)
 	for i, lang := range languageOrder {
 		languageMasks[lang] = 1 << uint(i)
 	}
 
-	// 4. Initialize the main data structures
+	// Prepare core structures.
 	invertedIndexMask = make(map[string]uint64)
 	stopWordsByLang = make(map[string]map[string]struct{})
 	stemmingRulesByLang = make(map[string]StemmingRules)
+	contractionsByLang = make(map[string][]string)
 	langsByScript = make(map[string][]string)
 
-	// Dynamically determine the script for each language based on its stop words.
+	// Heuristically determine the primary script used by each language from its stopwords.
 	for lang, data := range rawData {
 		if _, exists := languageMasks[lang]; !exists {
-			continue // Skip languages with no stop words
+			continue // skip languages without stopwords or beyond the 64-cap
 		}
 
-		determinedScript := scriptLatin // Default to Latin script
+		determinedScript := scriptLatin // default
 	wordLoop:
 		for _, word := range data.Stopwords {
 			for _, r := range word {
-				// Check the rune against various Unicode scripts.
-				// Once a non-Latin script is found, we can classify the language and stop checking.
 				switch {
 				case unicode.Is(unicode.Cyrillic, r):
 					determinedScript = scriptCyrillic
@@ -145,18 +165,17 @@ func init() {
 				}
 			}
 		}
-		// Append the language to the list for its determined script.
 		langsByScript[determinedScript] = append(langsByScript[determinedScript], lang)
 	}
 
-	// 5. Populate the main data structures for stop word removal and stemming.
+	// Build stopword sets, inverted index, stemming rules, and contractions.
 	for lang, data := range rawData {
-		langMask, maskExists := languageMasks[lang]
-		if !maskExists {
+		langMask, ok := languageMasks[lang]
+		if !ok {
 			continue
 		}
 
-		// Populate stop words
+		// Stopwords → set + inverted index for language mask aggregation.
 		wordSet := make(map[string]struct{}, len(data.Stopwords))
 		for _, word := range data.Stopwords {
 			wordSet[word] = struct{}{}
@@ -164,47 +183,42 @@ func init() {
 		}
 		stopWordsByLang[lang] = wordSet
 
-		// Populate stemming rules, sorting affixes for correctness
+		// Stemming rules: sort affixes by length (longest-first) for more stable stripping.
 		rules := data.Stemming
-		// Sort by length descending to match longer affixes first (e.g., "ational" before "ate")
-		sort.Slice(rules.Prefixes, func(i, j int) bool {
-			return len(rules.Prefixes[i]) > len(rules.Prefixes[j])
-		})
-		sort.Slice(rules.Suffixes, func(i, j int) bool {
-			return len(rules.Suffixes[i]) > len(rules.Suffixes[j])
-		})
+		sort.Slice(rules.Prefixes, func(i, j int) bool { return len(rules.Prefixes[i]) > len(rules.Prefixes[j]) })
+		sort.Slice(rules.Suffixes, func(i, j int) bool { return len(rules.Suffixes[i]) > len(rules.Suffixes[j]) })
 		stemmingRulesByLang[lang] = rules
-	}
 
-	// 6. Log the initialization results for debugging and verification.
-	log.Printf("Initialized stop-word removal and stemming for languages: %v", languageOrder)
-	for script, langs := range langsByScript {
-		log.Printf("Detected script '%s' for languages: %v", script, langs)
+		// Dotted contractions (used by abbreviation normalization).
+		if len(data.Contractions) > 0 {
+			contractionsByLang[lang] = append([]string(nil), data.Contractions...)
+		}
 	}
 }
 
 // --- CORE FUNCTIONS ---
 
-// DetectLanguage identifies the language of a sentence.
-// Uses text.Tokenize as the single tokenizer to ensure consistent behavior across packages.
+// DetectLanguage returns the most likely language for a sentence based on stopword hits.
+// Steps:
+// 1) Narrow candidates by Unicode script (heuristic).
+// 2) Tokenize via text.Tokenize (shared tokenizer across the library).
+// 3) Count stopword matches per candidate language using an inverted index + bitmasks.
+// 4) If the best score < ConfidenceThreshold or there is a tie for best, return "unknown".
 func DetectLanguage(sentence string) string {
-	// First, narrow down the potential languages based on the script.
+	// 1) Narrow by script to reduce comparisons.
 	candidateLangs := getCandidateLangs(sentence)
 
+	// 2) Tokenize with the canonical tokenizer.
 	tokens := text.Tokenize(sentence)
 	if len(tokens) == 0 {
 		return LangUnknown
 	}
 
-	// Score each candidate language by counting stop word occurrences.
+	// 3) Score candidates by stopword occurrences.
 	scores := make(map[string]int)
 	for _, token := range tokens {
 		if mask, found := invertedIndexMask[token]; found {
-			// The candidate list is a performance optimization.
-			// The main check is whether the language was loaded into languageMasks.
 			for lang := range languageMasks {
-				// Check if the bit for this language is set in the word's mask
-				// and if the language is in our candidate list.
 				if (mask&languageMasks[lang]) != 0 && isCandidate(lang, candidateLangs) {
 					scores[lang]++
 				}
@@ -212,13 +226,14 @@ func DetectLanguage(sentence string) string {
 		}
 	}
 
-	// Decide on the best language based on the scores.
+	// No matches at all → unknown.
 	if len(scores) == 0 {
 		return LangUnknown
 	}
 
+	// 4) Pick the best score with a minimal confidence threshold and tie handling.
 	bestLang := LangUnknown
-	maxScore := ConfidenceThreshold - 1 // A language needs at least ConfidenceThreshold matches.
+	maxScore := ConfidenceThreshold - 1
 	isTie := false
 
 	for lang, score := range scores {
@@ -237,13 +252,12 @@ func DetectLanguage(sentence string) string {
 	return bestLang
 }
 
-// RemoveStopWords removes stop words from a sentence for a given language.
-// If the language is not supported or unknown, it returns the original sentence.
-// Uses the unified tokenizer from internal/text.
+// RemoveStopWords removes known stopwords for the specified language.
+// If the language is unknown/unsupported, the original sentence is returned.
 func RemoveStopWords(sentence string, language string) string {
 	stopWords, ok := stopWordsByLang[language]
 	if !ok || language == LangUnknown {
-		return sentence // Return as is if language is unknown or unsupported
+		return sentence
 	}
 
 	tokens := text.Tokenize(sentence)
@@ -254,15 +268,13 @@ func RemoveStopWords(sentence string, language string) string {
 			resultTokens = append(resultTokens, token)
 		}
 	}
-
 	return strings.Join(resultTokens, " ")
 }
 
-// StemTokens applies stemming rules to a slice of tokens for a given language.
-// It returns a new slice with the stemmed tokens.
+// StemTokens applies lightweight stemming to tokens for the given language.
+// Rules are affix-based and may over-stem in edge cases; this is by design for speed/simplicity.
 func StemTokens(tokens []string, language string) []string {
 	rules, ok := stemmingRulesByLang[language]
-	// Return original tokens if language has no stemming rules or is unknown.
 	if !ok || (len(rules.Prefixes) == 0 && len(rules.Suffixes) == 0) {
 		return tokens
 	}
@@ -274,32 +286,32 @@ func StemTokens(tokens []string, language string) []string {
 	return stemmedTokens
 }
 
-// stemWord applies stemming rules to a single word.
+// stemWord strips a single word using the language's prefix/suffix rules.
+// The function honors MinLen and OneShot to avoid over-aggressive stripping.
 func stemWord(word string, rules StemmingRules) string {
-	// Do not stem if the word is too short.
+	// Guard: do not stem if the word is too short.
 	if len(word) < rules.MinLen {
 		return word
 	}
 
 	stemmed := word
 
-	// Apply prefix stemming
+	// Try prefix removal.
 	for _, prefix := range rules.Prefixes {
 		if strings.HasPrefix(stemmed, prefix) {
 			stemmed = strings.TrimPrefix(stemmed, prefix)
-			// If one_shot is true, only remove the first matching affix.
 			if rules.OneShot {
 				break
 			}
 		}
 	}
 
-	// Re-check length after prefix removal before trying to remove suffix.
+	// Re-check length after prefix removal.
 	if len(stemmed) < rules.MinLen {
 		return stemmed
 	}
 
-	// Apply suffix stemming
+	// Try suffix removal.
 	for _, suffix := range rules.Suffixes {
 		if strings.HasSuffix(stemmed, suffix) {
 			stemmed = strings.TrimSuffix(stemmed, suffix)
@@ -314,10 +326,10 @@ func stemWord(word string, rules StemmingRules) string {
 
 // --- HELPER FUNCTIONS ---
 
-// getCandidateLangs narrows down the list of possible languages by detecting the script of the input string.
-// This is a performance heuristic that returns all loaded languages that use the detected script.
+// getCandidateLangs returns candidate languages by detecting the Unicode script
+// used in the input string. If no script is detected, prefer Latin-script languages;
+// as a last resort, fall back to all loaded languages.
 func getCandidateLangs(s string) []string {
-	// Iterate through the string to detect a non-Latin script.
 	for _, r := range s {
 		var script string
 		switch {
@@ -343,23 +355,21 @@ func getCandidateLangs(s string) []string {
 
 		if script != "" {
 			if candidates, ok := langsByScript[script]; ok {
-				// Return the list of languages for the detected script.
 				return candidates
 			}
 		}
 	}
 
-	// If no specific script is detected, default to languages using the Latin script.
+	// Default: Latin-script languages if available.
 	if candidates, ok := langsByScript[scriptLatin]; ok && len(candidates) > 0 {
 		return candidates
 	}
 
-	// As a last resort (e.g., if only a Cyrillic language is loaded but the text is Latin),
-	// return all loaded languages to allow for a match.
+	// Fallback: all languages.
 	return allLangsList
 }
 
-// isCandidate checks if a language is in the list of candidates.
+// isCandidate returns true if lang exists in the candidates slice.
 func isCandidate(lang string, candidates []string) bool {
 	for _, c := range candidates {
 		if c == lang {
@@ -368,4 +378,3 @@ func isCandidate(lang string, candidates []string) bool {
 	}
 	return false
 }
-

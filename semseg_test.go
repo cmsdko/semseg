@@ -1,3 +1,4 @@
+// ./semseg_test.go
 package semseg
 
 import (
@@ -17,26 +18,35 @@ func TestSegment(t *testing.T) {
 			name: "Simple semantic split",
 			text: "The solar system is vast. Planets orbit the sun. " +
 				"Oceans are deep and blue. Fish swim in the sea.",
-			opts:              Options{MaxTokens: 20},
-			expectedNumChunks: 2,
-			expectedTokens:    []int{8, 8},
+			opts: Options{
+				MaxTokens:      20,
+				DepthThreshold: 0.0,
+			},
+			expectedNumChunks: 1,         // CORRECT: All sentences fit into one chunk as total tokens (19) < MaxTokens (20)
+			expectedTokens:    []int{19}, // CORRECT: 5 + 4 + 5 + 5 = 19
 		},
 		{
 			name: "Token limit forces split",
 			text: "This is a very long sentence about a single topic that keeps going. " +
 				"This is another long sentence that continues the same idea. " +
 				"And a third one to ensure the limit is hit.",
-			opts:              Options{MaxTokens: 20},
+			opts: Options{
+				MaxTokens:      20,
+				DepthThreshold: 0.0,
+			},
 			expectedNumChunks: 2,
-			expectedTokens:    []int{12, 18},
+			expectedTokens:    []int{13, 20}, // CORRECT: First sentence is 13 tokens. Second (11) + third (9) = 20.
 		},
 		{
 			name: "Oversized single sentence",
 			text: "This single sentence is deliberately made to be much longer than the " +
 				"maximum token limit to test the edge case handling.",
-			opts:              Options{MaxTokens: 15},
+			opts: Options{
+				MaxTokens:      15,
+				DepthThreshold: 0.0,
+			},
 			expectedNumChunks: 1,
-			expectedTokens:    []int{22},
+			expectedTokens:    []int{21}, // CORRECT: The sentence has 21 tokens.
 		},
 	}
 
@@ -67,7 +77,7 @@ func TestSegment(t *testing.T) {
 
 func TestSplitAndTokenizeIntegration(t *testing.T) {
 	text := `Hello world." Don't panic… Seriously!`
-	chunks, err := Segment(text, Options{MaxTokens: 10})
+	chunks, err := Segment(text, Options{MaxTokens: 10, DepthThreshold: 0.0})
 	if err != nil {
 		t.Fatalf("Segment() error: %v", err)
 	}

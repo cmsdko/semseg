@@ -5,14 +5,18 @@
 [![Build Status](https://github.com/cmsdko/semseg/actions/workflows/go.yml/badge.svg)](https://github.com/cmsdko/semseg/actions/workflows/go.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Semseg** is a lightweight, zero-dependency Go library for splitting text into semantically coherent chunks. It's designed for speed and simplicity, making it perfect for preprocessing text for RAG (Retrieval-Augmented Generation) pipelines, summarization, and other NLP tasks, all while running efficiently on a CPU.
+**Semseg** is a lightweight, zero-dependency Go library for splitting text into semantically coherent chunks.  
+It supports multi-language stopword removal, stemming, and abbreviation normalization — all in pure Go.  
+Perfect for preprocessing text in RAG (Retrieval-Augmented Generation) pipelines, summarization, or any NLP tasks.
 
 ## Features
 
-- **Semantic Splitting**: Chunks are divided at points of low semantic similarity, keeping related content together.
-- **Strict Token Limit**: Guarantees that no chunk exceeds a specified `MaxTokens` limit (unless a single sentence is larger than the limit).
-- **Zero Dependencies**: Pure Go implementation. Just add it to your project and go.
-- **Fast and Lightweight**: Uses a classic TF-IDF approach, ideal for CPU-bound applications without heavy model downloads.
+- **Semantic Splitting**: Splits at points of low semantic similarity while keeping related content together.
+- **Strict Token Limit**: Ensures no chunk exceeds `MaxTokens` (unless a single sentence is larger).
+- **Language Awareness**: Automatic or manual language detection, stopword removal, stemming, and abbreviation handling.
+- **Configurable**: Fine‑tune similarity thresholds, detection modes, and preprocessing options.
+- **Zero Dependencies**: 100% Go, no external models or libraries.
+- **Fast and Lightweight**: Classic TF‑IDF approach, optimized for CPU workloads.
 
 ## Installation
 
@@ -21,8 +25,6 @@ go get github.com/cmsdko/semseg
 ```
 
 ## Quick Start
-
-Here's a simple example of how to use `semseg` to split a text where the topic changes.
 
 ```go
 package main
@@ -37,7 +39,6 @@ import (
 func main() {
 	text := `The solar system consists of the Sun and the planets. A rocket journey to other planets takes a long time. The ocean covers most of the Earth's surface. Amazing creatures live in the depths of the ocean.`
 
-	// Configure the segmenter with a token limit.
 	opts := semseg.Options{
 		MaxTokens: 15,
 	}
@@ -55,41 +56,96 @@ func main() {
 
 ### Expected Output
 
-The library correctly identifies the topic change and creates two distinct chunks.
-
 ```
 --- Chunk 1 (14 tokens) ---
 The solar system consists of the Sun and the planets. A rocket journey to other planets takes a long time.
 
 --- Chunk 2 (13 tokens) ---
 The ocean covers most of the Earth's surface. Amazing creatures live in the depths of the ocean.
-
 ```
 
 ## How It Works
 
-The library follows a simple, robust algorithm:
+1. **Sentence Splitting** → text is divided into sentences (multi‑language aware).
+2. **Normalization** → abbreviations like `U.S.A.` or `т.е.` are normalized before splitting.
+3. **Stopword Removal & Stemming** → optional preprocessing to reduce noise.
+4. **Vectorization** → each sentence is turned into a TF‑IDF vector.
+5. **Cohesion Scoring** → cosine similarity between adjacent sentences is calculated.
+6. **Boundary Detection** → splits occur at local minima or below thresholds.
+7. **Chunk Assembly** → sentences grouped into chunks respecting `MaxTokens`.
 
-1.  **Sentence Splitting**: The input text is first divided into individual sentences.
-2.  **Vectorization**: Each sentence is converted into a TF-IDF vector. This vector represents the sentence's topic based on its word frequencies relative to the entire text.
-3.  **Cohesion Scoring**: The cosine similarity between adjacent sentence vectors is calculated. A high score means the topic continues; a low score suggests a topic change.
-4.  **Boundary Detection**: The algorithm identifies significant "dips" in the similarity scores, marking these points as semantic boundaries.
-5.  **Chunk Assembly**: Sentences are grouped into chunks, with splits occurring at the identified semantic boundaries or wherever necessary to strictly adhere to the `MaxTokens` limit.
+## Processing Pipeline (based on Options)
 
-## Configuration
+Depending on `Options`, the pipeline adapts as follows:
 
-You can customize the segmentation behavior by passing an `Options` struct to the `Segment` function.
+- **Language Detection**
+    - `Language` set → skip detection, force specific language.
+    - `LanguageDetectionTokens > 0` → detect language from first *N* tokens (slower, but enables use of JSON-based contractions/stopwords).
+    - `LanguageDetectionMode` → choose detection strategy (`first_sentence`, `first_ten_sentences`, `per_sentence`, `full_text`).
+    - ⚡ For **performance**, prefer `first_sentence` or `full_text`.
+    - 🧩 For **flexibility**, use token-based detection — it allows leveraging custom stopwords and abbreviations.
 
-- `MaxTokens` (int): **Required.** The hard limit on the number of tokens per chunk. The library will never create a chunk larger than this, with one exception: a single sentence that already exceeds `MaxTokens` will be placed in its own chunk.
+- **Abbreviation Normalization**
+    - Controlled by `PreNormalizeAbbreviations`.
+    - Removes dots in known contractions and acronyms (configurable in JSON).
 
-- `MinSplitSimilarity` (float64): An optional fixed threshold (0.0 to 1.0) for splitting. If the cosine similarity between two sentences is below this value, a split will be considered. If set to `0` (the default), the more robust local minima detection method is used instead.
+- **Stopword Removal**
+    - Controlled by `EnableStopWordRemoval`.
+    - Uses stopwords from `internal/data/stopwords.json`.
+    - You can **add/remove languages or stopwords** by editing this JSON.
 
-- `DepthThreshold` (float64): Used by the default boundary detection method. It defines the minimum "depth" of a similarity dip to be considered a valid split point. This prevents minor, insignificant fluctuations from causing a split. Default is `0.1`.
+- **Stemming**
+    - Controlled by `EnableStemming`.
+    - Uses simple affix-based rules per language, defined in JSON.
+
+- **Chunk Assembly**
+    - Always respects `MaxTokens`.
+    - Splits on semantic boundaries or when exceeding the limit.
+
+👉 The `stopwords.json` file is intentionally **user-editable**: you can remove or add words and even define new languages with custom rules. This makes the library flexible without depending on external NLP libraries.
+
+## API Example
+
+You can run Semseg as an HTTP API using the provided `example` project:
+
+```sh
+docker-compose -f example/docker-compose.yml up --build
+```
+
+Then send a request:
+
+```sh
+curl -X POST http://localhost:8080/segment -d '{
+  "text": "Mars is red. Venus is hot. The ocean is blue.",
+  "max_tokens": 10
+}' -H "Content-Type: application/json"
+```
+
+Response:
+
+```json
+[
+  {"Text":"Mars is red.","Sentences":["Mars is red."],"NumTokens":3},
+  {"Text":"Venus is hot.","Sentences":["Venus is hot."],"NumTokens":3},
+  {"Text":"The ocean is blue.","Sentences":["The ocean is blue."],"NumTokens":4}
+]
+```
+## Known Limitations
+
+- **Chinese and other CJK languages**:  
+  The library does not implement word segmentation for Han/Hiragana/Katakana/Hangul scripts.  
+  For these languages, stopword removal and stemming are not applied, and language detection will usually return `unknown`.  
+  Result: text is still split into sentences, but semantic cohesion may be poor.
+
+- **Language limit (64 max)**:  
+  Internally, the library uses a `uint64` bitmask to optimize stopword lookups.  
+  This means no more than 64 languages can be supported at once.  
+  If `stopwords.json` defines more than 64, initialization will fail with a fatal error.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to open an issue to report a bug or suggest a feature, or submit a pull request with improvements.
+Contributions are welcome! Open issues or PRs to suggest features, report bugs, or improve language resources.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT License. See [LICENSE](LICENSE).

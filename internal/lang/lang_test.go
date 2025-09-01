@@ -1,4 +1,3 @@
-// ./internal/lang/lang_test.go
 package lang
 
 import (
@@ -6,6 +5,8 @@ import (
 	"testing"
 )
 
+// TestDetectLanguage validates language detection across supported cases.
+// Includes positive examples, ambiguous input, too-short sentences, and empty string.
 func TestDetectLanguage(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -16,10 +17,10 @@ func TestDetectLanguage(t *testing.T) {
 		{"French", "Ceci est une phrase d'exemple pour la détection de la langue.", "french"},
 		{"Russian", "Это пример предложения для определения языка.", "russian"},
 		{"Arabic", "ما هذا إلا مثال بسيط لتحديد اللغة", "arabic"},
-		{"Ambiguous", "Hotel in Berlin", LangUnknown},
+		{"Ambiguous (tie)", "Hotel in Berlin", LangUnknown}, // could match multiple languages
 		{"Vietnamese", "Đi đâu đó", "vietnamese"},
-		{"Too short", "Please go.", LangUnknown},
-		{"Empty", "", LangUnknown},
+		{"Too short (below threshold)", "Please go.", LangUnknown},
+		{"Empty input", "", LangUnknown},
 	}
 
 	for _, tc := range testCases {
@@ -32,6 +33,7 @@ func TestDetectLanguage(t *testing.T) {
 	}
 }
 
+// TestRemoveStopWords checks stopword removal for supported and unsupported languages.
 func TestRemoveStopWords(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -49,19 +51,19 @@ func TestRemoveStopWords(t *testing.T) {
 			"Russian sentence",
 			"Это просто пример предложения, и из него нужно удалить некоторые слова.",
 			"russian",
-			"просто пример предложения него нужно удалить некоторые слова",
+			"просто пример предложения нужно удалить некоторые слова",
 		},
 		{
-			"Unknown language",
+			"Unknown language constant",
 			"This is a sentence.",
 			LangUnknown,
-			"This is a sentence.", // Should return original
+			"This is a sentence.", // Should return original unchanged
 		},
 		{
-			"Unsupported language",
+			"Unsupported language string",
 			"Sentence in unsupported language.",
 			"polish",
-			"Sentence in unsupported language.", // Should return original
+			"Sentence in unsupported language.", // Should return original unchanged
 		},
 	}
 
@@ -75,7 +77,8 @@ func TestRemoveStopWords(t *testing.T) {
 	}
 }
 
-// ADDED: Test for the new StemTokens function
+// TestStemTokens verifies stemming behavior for different languages and edge cases.
+// Uses lightweight affix-based rules defined in stopwords.json.
 func TestStemTokens(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -87,7 +90,7 @@ func TestStemTokens(t *testing.T) {
 			name:     "English stemming",
 			lang:     "english",
 			tokens:   []string{"running", "nationalization", "cats", "beautifully"},
-			expected: []string{"runn", "nation", "cat", "beautifully"}, // 'running' -> 'runn' because 'ing' is removed
+			expected: []string{"runn", "nation", "cat", "beautiful"}, // suffixes stripped
 		},
 		{
 			name:     "Russian stemming",
@@ -102,16 +105,16 @@ func TestStemTokens(t *testing.T) {
 			expected: []string{"macht", "kind"},
 		},
 		{
-			name:     "Language with no stemming rules",
+			name:     "Language without stemming rules",
 			lang:     "vietnamese",
 			tokens:   []string{"chạy", "nhảy"},
-			expected: []string{"chạy", "nhảy"}, // Should be unchanged
+			expected: []string{"chạy", "nhảy"}, // unchanged
 		},
 		{
-			name:     "Word shorter than min_len",
+			name:     "Words shorter than MinLen",
 			lang:     "english",
 			tokens:   []string{"is", "on", "running"},
-			expected: []string{"is", "on", "runn"}, // "is" and "on" are too short
+			expected: []string{"is", "on", "runn"}, // short words remain intact
 		},
 		{
 			name:     "Empty input",
