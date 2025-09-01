@@ -4,6 +4,7 @@ package semseg
 
 import (
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/cmsdko/semseg/internal/lang"
@@ -218,31 +219,44 @@ func calculateCohesion(vectors []map[string]float64) []float64 {
 	return scores
 }
 
-// findBoundaries identifies the indices where splits should occur.
-func findBoundaries(scores []float64, opts Options) map[int]bool {
-	boundaries := make(map[int]bool)
-	if len(scores) == 0 {
-		return boundaries
-	}
+// findBoundaries identifies sentence boundaries based on similarity scores and options
+func findBoundaries(sentences []string, scores []float64, opts Options) []bool {
+	boundaries := make([]bool, len(scores))
 
-	for i := 0; i < len(scores); i++ {
-		if opts.MinSplitSimilarity > 0 {
-			if scores[i] < opts.MinSplitSimilarity {
+	for i := 1; i < len(scores)-1; i++ {
+		// Check for local minimum
+		if scores[i] <= scores[i-1] && scores[i] <= scores[i+1] {
+			// Apply thresholds
+			if (opts.MinSplitSimilarity == 0 || scores[i] <= opts.MinSplitSimilarity) &&
+				(opts.DepthThreshold == 0 || (math.Min(scores[i-1], scores[i+1])-scores[i] >= opts.DepthThreshold)) {
 				boundaries[i] = true
 			}
-			continue
-		}
-
-		if i > 0 && i < len(scores)-1 {
-			isLocalMinimum := scores[i] < scores[i-1] && scores[i] < scores[i+1]
-			if isLocalMinimum {
-				depth := (scores[i-1]+scores[i+1])/2 - scores[i]
-				if depth >= opts.DepthThreshold {
-					boundaries[i] = true
-				}
-			}
 		}
 	}
+
+	// Fallback: if no local minima found and thresholds disabled, cut at global minimum
+	if opts.MinSplitSimilarity == 0 && opts.DepthThreshold == 0 && len(scores) > 0 {
+		found := false
+		for _, b := range boundaries {
+			if b {
+				found = true
+				break
+			}
+		}
+		if !found {
+			minIdx := 0
+			minVal := scores[0]
+			for i := 1; i < len(scores); i++ {
+				// use <= to make behavior stable on flat minima
+				if scores[i] <= minVal {
+					minVal = scores[i]
+					minIdx = i
+				}
+			}
+			boundaries[minIdx] = true
+		}
+	}
+
 	return boundaries
 }
 

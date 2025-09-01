@@ -7,9 +7,9 @@ WORKDIR /app
 
 # To leverage Docker layer caching, we'll copy module files first
 # and download dependencies before copying the source code.
-COPY go.mod go.sum ./
+#COPY go.mod  ./
 COPY example/go.mod example/go.sum ./example/
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+#RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 # Copy the entire project source code
 COPY . .
