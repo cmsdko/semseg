@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// TODO
+// Real Test semantic chunking
+
 func TestSegment(t *testing.T) {
 	testCases := []struct {
 		name              string
