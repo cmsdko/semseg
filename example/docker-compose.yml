@@ -9,11 +9,11 @@ services:
       - "8080:8080"
     #environment:
       # URL for your Ollama API. host.docker.internal works on Docker Desktop.
-      #- OLLAMA_URL=http://host.docker.internal:11434
+      # - CHUNKER_OLLAMA_URL=http://host:11434
       # The embedding model to use.
       # paraphrase-multilingual - Good speed and quality
-      #- OLLAMA_MODEL=paraphrase-multilingual
-      #- OLLAMA_MAX_WORKERS=16
+      # - CHUNKER_OLLAMA_MODEL=paraphrase-multilingual
+      # - CHUNKER_OLLAMA_MAX_WORKERS=16
     restart: unless-stopped
 
   #ollama:

@@ -17,7 +17,6 @@ const (
 )
 
 // APIRequest represents the JSON structure expected by the /segment endpoint.
-// It contains the text to be segmented and all optional configuration parameters.
 type APIRequest struct {
 	Text                      string  `json:"text"`
 	MaxTokens                 int     `json:"max_tokens"`
@@ -29,6 +28,13 @@ type APIRequest struct {
 	PreNormalizeAbbreviations *bool   `json:"pre_normalize_abbreviations,omitempty"`
 	EnableStopWordRemoval     *bool   `json:"enable_stop_word_removal,omitempty"`
 	EnableStemming            *bool   `json:"enable_stemming,omitempty"`
+	TfidfMinNgramSize         int     `json:"tfidf_min_ngram_size,omitempty"`
+	TfidfMaxNgramSize         int     `json:"tfidf_max_ngram_size,omitempty"`
+
+	// New fields for controlling the semantic cache
+	EmbeddingCacheMode               string  `json:"embedding_cache_mode,omitempty"`
+	CacheSimilarityThreshold         float64 `json:"cache_similarity_threshold,omitempty"`
+	AdaptiveCacheActivationThreshold int     `json:"adaptive_cache_activation_threshold,omitempty"`
 }
 
 // ResponseOptions reflects the settings that were actually used for segmentation.
@@ -42,9 +48,16 @@ type ResponseOptions struct {
 	PreNormalizeAbbreviations bool    `json:"pre_normalize_abbreviations"`
 	EnableStopWordRemoval     bool    `json:"enable_stop_word_removal"`
 	EnableStemming            bool    `json:"enable_stemming"`
+	TfidfMinNgramSize         int     `json:"tfidf_min_ngram_size"`
+	TfidfMaxNgramSize         int     `json:"tfidf_max_ngram_size"`
+
+	// New fields for reflecting cache settings
+	EmbeddingCacheMode               string  `json:"embedding_cache_mode"`
+	CacheSimilarityThreshold         float64 `json:"cache_similarity_threshold"`
+	AdaptiveCacheActivationThreshold int     `json:"adaptive_cache_activation_threshold"`
 }
 
-// Stats contains performance statistics for a single request.
+// ... (Stats, APIResponse, APIError structs remain the same) ...
 type Stats struct {
 	TotalChunks      int     `json:"total_chunks"`
 	TotalTokens      int     `json:"total_tokens"`
@@ -53,22 +66,20 @@ type Stats struct {
 	TokensPerSecond  float64 `json:"tokens_per_second"`
 }
 
-// APIResponse is the complete response structure returned by the /segment endpoint.
 type APIResponse struct {
 	OptionsUsed ResponseOptions `json:"options_used"`
 	Chunks      []semseg.Chunk  `json:"chunks"`
 	Stats       Stats           `json:"stats"`
 }
 
-// APIError is the structure for JSON error responses.
 type APIError struct {
 	Error string `json:"error"`
 }
 
-// APIHandler holds dependencies like the shared http.Client.
-// This allows us to inject dependencies and makes handlers testable.
+// APIHandler holds dependencies like the shared http.Client and the embedding cache.
 type APIHandler struct {
-	ollamaClient *http.Client
+	ollamaClient   *http.Client
+	embeddingCache semseg.EmbeddingCache
 }
 
 // NewAPIHandler creates a new handler with its dependencies initialized.
@@ -80,17 +91,19 @@ func NewAPIHandler() *APIHandler {
 	}
 
 	log.Printf("Initializing Ollama client with a %d second timeout", timeoutSec)
-
-	// Create a single, reusable http.Client
 	client := &http.Client{
 		Timeout: time.Duration(timeoutSec) * time.Second,
-		// It's good practice to customize the transport for production apps,
-		// e.g., to set MaxIdleConns, MaxIdleConnsPerHost, etc.
-		// For this example, the default transport is sufficient.
 	}
 
+	// Create a single, shared in-memory cache wrapped by the adaptive manager.
+	// This ensures cache state persists across all API requests.
+	log.Println("Initializing a shared adaptive embedding cache for the handler.")
+	baseCache := semseg.NewInMemoryCache()
+	adaptiveManager := semseg.NewAdaptiveCacheManager(baseCache)
+
 	return &APIHandler{
-		ollamaClient: client,
+		ollamaClient:   client,
+		embeddingCache: adaptiveManager,
 	}
 }
 
@@ -112,7 +125,6 @@ func (h *APIHandler) handleSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Create options for the semseg library, injecting the shared HTTP client.
 	opts := semseg.Options{
 		MaxTokens:                 req.MaxTokens,
 		MinSplitSimilarity:        req.MinSplitSimilarity,
@@ -123,13 +135,19 @@ func (h *APIHandler) handleSegment(w http.ResponseWriter, r *http.Request) {
 		PreNormalizeAbbreviations: req.PreNormalizeAbbreviations,
 		EnableStopWordRemoval:     req.EnableStopWordRemoval,
 		EnableStemming:            req.EnableStemming,
+		TfidfMinNgramSize:         req.TfidfMinNgramSize,
+		TfidfMaxNgramSize:         req.TfidfMaxNgramSize,
 		HTTPClient:                h.ollamaClient,
+
+		// Pass cache settings from the request to the library
+		EmbeddingCacheMode:               req.EmbeddingCacheMode,
+		EmbeddingCache:                   h.embeddingCache, // Use the shared cache instance
+		CacheSimilarityThreshold:         req.CacheSimilarityThreshold,
+		AdaptiveCacheActivationThreshold: req.AdaptiveCacheActivationThreshold,
 	}
 
-	// 2. Create the response options struct to reflect applied defaults.
 	responseOpts := buildResponseOptions(req)
 
-	// 3. Perform segmentation and measure the time.
 	startTime := time.Now()
 	chunks, err := semseg.Segment(req.Text, opts)
 	duration := time.Since(startTime)
@@ -139,10 +157,7 @@ func (h *APIHandler) handleSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Calculate statistics.
 	stats := calculateStats(chunks, duration)
-
-	// 5. Form and send the complete response.
 	response := APIResponse{
 		OptionsUsed: responseOpts,
 		Chunks:      chunks,
@@ -153,31 +168,45 @@ func (h *APIHandler) handleSegment(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-// buildResponseOptions populates the options structure for the API response,
-// applying the same default logic as the library to show the user what was used.
 func buildResponseOptions(req APIRequest) ResponseOptions {
-	responseOpts := ResponseOptions{
-		MaxTokens:               req.MaxTokens,
-		MinSplitSimilarity:      req.MinSplitSimilarity,
-		DepthThreshold:          req.DepthThreshold,
-		Language:                req.Language,
-		LanguageDetectionMode:   req.LanguageDetectionMode,
-		LanguageDetectionTokens: req.LanguageDetectionTokens,
+	opts := ResponseOptions{
+		MaxTokens:                        req.MaxTokens,
+		MinSplitSimilarity:               req.MinSplitSimilarity,
+		DepthThreshold:                   req.DepthThreshold,
+		Language:                         req.Language,
+		LanguageDetectionMode:            req.LanguageDetectionMode,
+		LanguageDetectionTokens:          req.LanguageDetectionTokens,
+		TfidfMinNgramSize:                req.TfidfMinNgramSize,
+		TfidfMaxNgramSize:                req.TfidfMaxNgramSize,
+		EmbeddingCacheMode:               req.EmbeddingCacheMode,
+		CacheSimilarityThreshold:         req.CacheSimilarityThreshold,
+		AdaptiveCacheActivationThreshold: req.AdaptiveCacheActivationThreshold,
 	}
-	// Apply default values for clear user feedback
-	if responseOpts.MinSplitSimilarity == 0 && responseOpts.DepthThreshold <= 0 {
-		responseOpts.DepthThreshold = 0.1 // Default from the library
+
+	// Apply defaults for clear user feedback
+	if opts.EmbeddingCacheMode == "" {
+		opts.EmbeddingCacheMode = semseg.CacheModeDisable
 	}
-	if responseOpts.Language == "" && responseOpts.LanguageDetectionMode == "" {
-		responseOpts.LanguageDetectionMode = semseg.LangDetectModeFirstSentence
+	if opts.MinSplitSimilarity == 0 && opts.DepthThreshold <= 0 {
+		opts.DepthThreshold = 0.1
 	}
-	responseOpts.PreNormalizeAbbreviations = req.PreNormalizeAbbreviations == nil || *req.PreNormalizeAbbreviations
-	responseOpts.EnableStopWordRemoval = req.EnableStopWordRemoval == nil || *req.EnableStopWordRemoval
-	responseOpts.EnableStemming = req.EnableStemming == nil || *req.EnableStemming
-	return responseOpts
+	if opts.Language == "" && opts.LanguageDetectionMode == "" {
+		opts.LanguageDetectionMode = semseg.LangDetectModeFirstSentence
+	}
+	if opts.EmbeddingCacheMode != semseg.CacheModeDisable && opts.CacheSimilarityThreshold == 0 {
+		opts.CacheSimilarityThreshold = 0.9
+	}
+	if opts.EmbeddingCacheMode == semseg.CacheModeAdaptive && opts.AdaptiveCacheActivationThreshold == 0 {
+		opts.AdaptiveCacheActivationThreshold = 100
+	}
+
+	opts.PreNormalizeAbbreviations = req.PreNormalizeAbbreviations == nil || *req.PreNormalizeAbbreviations
+	opts.EnableStopWordRemoval = req.EnableStopWordRemoval == nil || *req.EnableStopWordRemoval
+	opts.EnableStemming = req.EnableStemming == nil || *req.EnableStemming
+	return opts
 }
 
-// calculateStats computes performance metrics for the segmentation task.
+// ... (calculateStats, jsonError, main functions remain the same) ...
 func calculateStats(chunks []semseg.Chunk, duration time.Duration) Stats {
 	totalTokens := 0
 	for _, chunk := range chunks {
@@ -201,7 +230,6 @@ func calculateStats(chunks []semseg.Chunk, duration time.Duration) Stats {
 	}
 }
 
-// jsonError writes a standard JSON error message to the response.
 func jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -209,12 +237,9 @@ func jsonError(w http.ResponseWriter, message string, code int) {
 }
 
 func main() {
-	// Initialize the handler which contains our shared dependencies.
 	apiHandler := NewAPIHandler()
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/segment", apiHandler.handleSegment)
-
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
@@ -223,7 +248,6 @@ func main() {
 		WriteTimeout:      10 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
-
 	log.Println("Starting server on :8080...")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Could not start server: %s\n", err)

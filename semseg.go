@@ -21,96 +21,88 @@ import (
 	"github.com/cmsdko/semseg/internal/tfidf"
 )
 
-// Constants for LanguageDetectionMode.
+// ... (LanguageDetectionMode constants remain the same) ...
 const (
-	// LangDetectModeFirstSentence detects the language from the first sentence only. This is the default mode.
-	LangDetectModeFirstSentence = "first_sentence"
-	// LangDetectModeFirstTenSentences detects the language from the first 10 sentences.
+	LangDetectModeFirstSentence     = "first_sentence"
 	LangDetectModeFirstTenSentences = "first_ten_sentences"
-	// LangDetectModePerSentence detects the language for each sentence individually.
-	LangDetectModePerSentence = "per_sentence"
-	// LangDetectModeFullText detects the language from the entire input text.
-	LangDetectModeFullText = "full_text"
+	LangDetectModePerSentence       = "per_sentence"
+	LangDetectModeFullText          = "full_text"
+)
+
+// Constants for EmbeddingCacheMode.
+const (
+	// CacheModeDisable disables the semantic cache completely. All embedding requests go to the provider. This is the default.
+	CacheModeDisable = "disable"
+	// CacheModeForce enables the semantic cache in a blocking mode. It checks the cache first; on a miss,
+	// it calls the embedding provider and then synchronously updates the cache before returning.
+	CacheModeForce = "force"
+	// CacheModeAdaptive starts with caching disabled for lookups but asynchronously populates the cache
+	// in the background. Once the cache contains enough similar items (see AdaptiveCacheActivationThreshold),
+	// it automatically switches to 'force' mode for all subsequent requests.
+	CacheModeAdaptive = "adaptive"
 )
 
 // Constants for Ollama worker pool
 const (
-	OllamaMaxWorkersEnvVar = "OLLAMA_MAX_WORKERS"
+	OllamaMaxWorkersEnvVar = "CHUNKER_OLLAMA_MAX_WORKERS"
 	DefaultOllamaWorkers   = 4
 )
 
-// Chunk represents a single segment of the original text.
+// ... (Chunk struct remains the same) ...
 type Chunk struct {
-	// Text is the combined string of all sentences in the chunk.
-	Text string
-	// Sentences are the original sentences that make up this chunk.
+	Text      string
 	Sentences []string
-	// NumTokens is the number of tokens in this chunk, calculated by the simple tokenizer.
 	NumTokens int
 }
 
 // Options configures the segmentation process.
 type Options struct {
-	// MaxTokens is a hard limit for the number of tokens in a chunk.
-	// The library guarantees that no chunk will exceed this size, unless a single
-	// sentence is larger than the limit, in which case it will be in its own chunk.
-	// This field is required.
-	MaxTokens int
-
-	// MinSplitSimilarity (range 0.0 to 1.0) is the cosine similarity threshold.
-	// A gap between sentences with similarity below this value is considered a potential split point.
-	// If set to 0 (default), the algorithm will dynamically find local minima (recommended).
-	MinSplitSimilarity float64
-
-	// DepthThreshold (range 0.0 to 1.0) is used when MinSplitSimilarity is 0.
-	// It defines the minimum "depth" of a similarity dip to be considered a valid split point.
-	// This helps filter out minor, insignificant fluctuations.
-	// Default: 0.1. To force zero (i.e., accept any local minimum), set to 0 explicitly.
-	// If set to a negative value, the library will use the default (0.1).
-	DepthThreshold float64
-
-	// Language forces the segmenter to use a specific language (e.g., "english", "russian"),
-	// skipping the language auto-detection step. If set, this option overrides LanguageDetectionMode.
-	// If empty (default), the language will be auto-detected based on LanguageDetectionMode.
-	Language string
-
-	// LanguageDetectionMode specifies the strategy for automatic language detection when Language is not set.
-	// Use one of the LangDetectMode* constants (e.g., LangDetectModeFirstSentence).
-	// If empty, it defaults to LangDetectModeFirstSentence.
-	LanguageDetectionMode string
-
-	// LanguageDetectionTokens enables early detection by the first N tokens.
-	// If > 0 and Language is empty and mode is not per-sentence, language is detected
-	// from the first N tokens before sentence splitting.
-	LanguageDetectionTokens int
-
-	// PreNormalizeAbbreviations controls whether dotted abbreviations/acronyms are normalized
-	// (dots removed) before sentence splitting. If nil (default), it is treated as true.
+	// ... (MaxTokens, MinSplitSimilarity, etc. remain the same) ...
+	MaxTokens                 int
+	MinSplitSimilarity        float64
+	DepthThreshold            float64
+	Language                  string
+	LanguageDetectionMode     string
+	LanguageDetectionTokens   int
 	PreNormalizeAbbreviations *bool
+	EnableStopWordRemoval     *bool
+	EnableStemming            *bool
+	TfidfMinNgramSize         int
+	TfidfMaxNgramSize         int
+	HTTPClient                *http.Client
 
-	// EnableStopWordRemoval controls whether common "noise words" are removed before similarity calculation.
-	// If nil (default), it is treated as true. This option is ignored if using Ollama embeddings.
-	EnableStopWordRemoval *bool
+	// --- Semantic Caching for Dense Embeddings ---
 
-	// EnableStemming controls whether token stemming (reducing words to their root form) is applied.
-	// If nil (default), it is treated as true. This option is ignored if using Ollama embeddings.
-	EnableStemming *bool
+	// EmbeddingCacheMode specifies the caching strategy: "disable", "force", or "adaptive".
+	// Default: "disable".
+	EmbeddingCacheMode string
 
-	// HTTPClient allows providing a custom http.Client for Ollama requests.
-	// If nil, a new client with a default 60-second timeout will be created for each call.
-	// Reusing a single client across multiple calls is highly recommended for performance
-	// as it enables TCP connection reuse.
-	HTTPClient *http.Client
+	// EmbeddingCache is an instance of a cache that stores mappings from a sentence's
+	// TF-IDF n-gram vector to its dense embedding. This allows reusing embeddings for
+	// semantically similar sentences, reducing API calls to heavy models.
+	// A default in-memory cache can be created with NewInMemoryCache() or NewAdaptiveCacheManager().
+	EmbeddingCache EmbeddingCache
+
+	// CacheSimilarityThreshold (range 0.0 to 1.0) is the cosine similarity
+	// threshold used to determine a cache hit. Default: 0.9.
+	CacheSimilarityThreshold float64
+
+	// AdaptiveCacheActivationThreshold is the number of items in the cache that must have at least one
+	// semantically similar neighbor (defined by CacheSimilarityThreshold) before an 'adaptive' cache
+	// switches to 'force' mode. Only used when EmbeddingCacheMode is "adaptive". Default: 100.
+	AdaptiveCacheActivationThreshold int
 }
 
 // Segment splits a given text into semantic chunks based on the provided options.
+// It acts as an orchestrator, handling preprocessing and then dispatching to either
+// the Ollama or TF-IDF implementation to get similarity scores.
 func Segment(textStr string, opts Options) ([]Chunk, error) {
 	if err := validateOptions(opts); err != nil {
 		return nil, err
 	}
 	setDefaultOptions(&opts)
 
-	// --- Early language selection (explicit or by first N tokens) before any normalization/splitting ---
+	// --- 1. Early language selection (explicit or by first N tokens) before any normalization/splitting ---
 	var globalDetectedLang string
 	if opts.Language != "" {
 		globalDetectedLang = opts.Language
@@ -124,13 +116,12 @@ func Segment(textStr string, opts Options) ([]Chunk, error) {
 		globalDetectedLang = lang.DetectLanguage(strings.Join(toks[:n], " "))
 	}
 
-	// --- Optional abbreviation normalization before sentence splitting ---
+	// --- 2. Optional abbreviation normalization before sentence splitting ---
 	if *opts.PreNormalizeAbbreviations {
-		// Use already chosen language if available, otherwise empty which falls back inside.
 		textStr = lang.NormalizeAbbreviations(textStr, globalDetectedLang)
 	}
 
-	// Split into sentences after normalization.
+	// --- 3. Split into sentences and handle edge cases ---
 	sentences := text.SplitSentences(textStr)
 	if len(sentences) == 0 {
 		return []Chunk{}, nil
@@ -145,78 +136,105 @@ func Segment(textStr string, opts Options) ([]Chunk, error) {
 		tokenCounts[i] = len(text.Tokenize(s))
 	}
 
+	// --- 4. Calculate cohesion scores using the appropriate method (Ollama or TF-IDF) ---
 	var scores []float64
+	var err error
 
-	// Check environment variables for Ollama
-	ollamaURL := os.Getenv("OLLAMA_URL")
-	ollamaModel := os.Getenv("OLLAMA_MODEL")
+	ollamaURL := os.Getenv("CHUNKER_OLLAMA_URL")
+	ollamaModel := os.Getenv("CHUNKER_OLLAMA_MODEL")
 
 	if ollamaURL != "" && ollamaModel != "" {
-		// --- PATH WITH OLLAMA EMBEDDINGS ---
-		// Use the http.Client from options if provided; otherwise, create a default one.
-		// Reusing a client is significantly more performant.
-		client := opts.HTTPClient
-		if client == nil {
-			client = &http.Client{Timeout: 60 * time.Second}
-		}
-		vectors, err := getOllamaEmbeddings(sentences, ollamaURL, ollamaModel, client)
+		// PATH A: Use modern embeddings via Ollama for higher accuracy.
+		scores, err = segmentWithOllama(sentences, ollamaURL, ollamaModel, opts)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get ollama embeddings: %w", err)
+			return nil, err // Propagate errors from Ollama API calls.
 		}
-		scores = calculateCohesionDense(vectors)
 	} else {
-		// --- EXISTING PATH WITH TF-IDF ---
-		if globalDetectedLang == "" && opts.LanguageDetectionMode != LangDetectModePerSentence {
-			switch opts.LanguageDetectionMode {
-			case LangDetectModeFirstSentence:
-				globalDetectedLang = lang.DetectLanguage(sentences[0])
-			case LangDetectModeFirstTenSentences:
-				end := 10
-				if len(sentences) < 10 {
-					end = len(sentences)
-				}
-				textForDetection := strings.Join(sentences[:end], " ")
-				globalDetectedLang = lang.DetectLanguage(textForDetection)
-			case LangDetectModeFullText:
-				globalDetectedLang = lang.DetectLanguage(textStr)
-			default:
-				globalDetectedLang = lang.DetectLanguage(sentences[0])
-			}
-		}
-
-		tokenizedSentences := make([][]string, len(sentences))
-		for i, s := range sentences {
-			var detectedLang string
-			if opts.LanguageDetectionMode == LangDetectModePerSentence && opts.Language == "" {
-				detectedLang = lang.DetectLanguage(s)
-			} else {
-				detectedLang = globalDetectedLang
-			}
-
-			sentenceForSimilarity := s
-			if *opts.EnableStopWordRemoval {
-				sentenceForSimilarity = lang.RemoveStopWords(sentenceForSimilarity, detectedLang)
-			}
-			tokensForSimilarity := text.Tokenize(sentenceForSimilarity)
-			if *opts.EnableStemming {
-				tokensForSimilarity = lang.StemTokens(tokensForSimilarity, detectedLang)
-			}
-			tokenizedSentences[i] = tokensForSimilarity
-		}
-
-		corpus := tfidf.NewCorpus(tokenizedSentences)
-		vectors := make([]map[string]float64, len(sentences))
-		for i, ts := range tokenizedSentences {
-			vectors[i] = corpus.Vectorize(ts)
-		}
-		scores = calculateCohesion(vectors)
+		// PATH B: Use the lightweight, built-in TF-IDF method.
+		scores = segmentWithTFIDF(textStr, sentences, opts, globalDetectedLang)
 	}
 
+	// --- 5. Find split boundaries and build the final chunks ---
 	boundaryIndices := findBoundaries(scores, opts)
 	return buildChunks(sentences, tokenCounts, boundaryIndices, opts.MaxTokens), nil
 }
 
-// Structures for Ollama request and response
+// segmentWithOllama handles the logic for vectorizing sentences using an Ollama model
+// and calculating cohesion scores between them.
+func segmentWithOllama(sentences []string, ollamaURL, ollamaModel string, opts Options) ([]float64, error) {
+	client := opts.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 60 * time.Second}
+	}
+
+	vectors, err := getOllamaEmbeddings(sentences, ollamaURL, ollamaModel, client, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ollama embeddings: %w", err)
+	}
+
+	return calculateCohesionDense(vectors), nil
+}
+
+// ... (segmentWithTFIDF remains the same) ...
+func segmentWithTFIDF(textStr string, sentences []string, opts Options, globalDetectedLang string) []float64 {
+	// If language wasn't detected early, detect it now based on the specified mode.
+	if globalDetectedLang == "" && opts.LanguageDetectionMode != LangDetectModePerSentence {
+		switch opts.LanguageDetectionMode {
+		case LangDetectModeFirstSentence:
+			globalDetectedLang = lang.DetectLanguage(sentences[0])
+		case LangDetectModeFirstTenSentences:
+			end := 10
+			if len(sentences) < 10 {
+				end = len(sentences)
+			}
+			textForDetection := strings.Join(sentences[:end], " ")
+			globalDetectedLang = lang.DetectLanguage(textForDetection)
+		case LangDetectModeFullText:
+			globalDetectedLang = lang.DetectLanguage(textStr)
+		default:
+			globalDetectedLang = lang.DetectLanguage(sentences[0]) // Fallback to default
+		}
+	}
+
+	// Pre-process and tokenize each sentence based on options.
+	tokenizedSentences := make([][]string, len(sentences))
+	for i, s := range sentences {
+		var detectedLang string
+		if opts.LanguageDetectionMode == LangDetectModePerSentence && opts.Language == "" {
+			detectedLang = lang.DetectLanguage(s)
+		} else {
+			detectedLang = globalDetectedLang
+		}
+
+		var tokens []string
+		if opts.TfidfMinNgramSize > 0 && opts.TfidfMaxNgramSize >= opts.TfidfMinNgramSize {
+			// N-gram mode: stemming and stop words are not applied.
+			tokens = text.GenerateCharNgrams(s, opts.TfidfMinNgramSize, opts.TfidfMaxNgramSize)
+		} else {
+			// Standard word tokenization mode with optional preprocessing.
+			sentenceForSimilarity := s
+			if *opts.EnableStopWordRemoval {
+				sentenceForSimilarity = lang.RemoveStopWords(sentenceForSimilarity, detectedLang)
+			}
+			tokens = text.Tokenize(sentenceForSimilarity)
+			if *opts.EnableStemming {
+				tokens = lang.StemTokens(tokens, detectedLang)
+			}
+		}
+		tokenizedSentences[i] = tokens
+	}
+
+	// Vectorize sentences using TF-IDF and calculate similarity scores.
+	corpus := tfidf.NewCorpus(tokenizedSentences)
+	vectors := make([]map[string]float64, len(sentences))
+	for i, ts := range tokenizedSentences {
+		vectors[i] = corpus.Vectorize(ts)
+	}
+
+	return calculateCohesion(vectors)
+}
+
+// ... (ollama structs remain the same) ...
 type ollamaRequest struct {
 	Model  string `json:"model"`
 	Prompt string `json:"prompt"`
@@ -227,7 +245,6 @@ type ollamaResponse struct {
 	Error     string    `json:"error,omitempty"`
 }
 
-// Structures for worker pool
 type ollamaJob struct {
 	index    int
 	sentence string
@@ -239,58 +256,171 @@ type ollamaResult struct {
 	err       error
 }
 
-// getOllamaEmbeddings fetches embeddings for all sentences concurrently using a worker pool.
-func getOllamaEmbeddings(sentences []string, ollamaURL, ollamaModel string, client *http.Client) ([][]float64, error) {
-	numSentences := len(sentences)
-	if numSentences == 0 {
+// getOllamaEmbeddings fetches embeddings for all sentences, dispatching to the correct caching strategy.
+func getOllamaEmbeddings(sentences []string, ollamaURL, ollamaModel string, client *http.Client, opts Options) ([][]float64, error) {
+	if len(sentences) == 0 {
 		return [][]float64{}, nil
 	}
 
-	// Determine the number of workers from environment variable or default.
-	numWorkersStr := os.Getenv(OllamaMaxWorkersEnvVar)
-	numWorkers, err := strconv.Atoi(numWorkersStr)
-	if err != nil || numWorkers <= 0 {
-		numWorkers = DefaultOllamaWorkers
+	switch opts.EmbeddingCacheMode {
+	case CacheModeForce:
+		return getOllamaEmbeddingsWithCache(sentences, ollamaURL, ollamaModel, client, opts)
+	case CacheModeAdaptive:
+		return getOllamaEmbeddingsAdaptive(sentences, ollamaURL, ollamaModel, client, opts)
+	default: // CacheModeDisable or empty
+		return getOllamaEmbeddingsDirect(sentences, ollamaURL, ollamaModel, client)
 	}
-	if numWorkers > numSentences {
-		numWorkers = numSentences
-	}
+}
 
-	jobs := make(chan ollamaJob, numSentences)
-	results := make(chan ollamaResult, numSentences)
-	url := strings.TrimSuffix(ollamaURL, "/") + "/api/embeddings"
-
-	var wg sync.WaitGroup
-	// Start workers.
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go ollamaWorker(&wg, client, jobs, results, url, ollamaModel)
-	}
-
-	// Send jobs.
-	for i, sentence := range sentences {
-		jobs <- ollamaJob{index: i, sentence: sentence}
-	}
-	close(jobs)
-
-	// Wait for all workers to finish.
-	wg.Wait()
-	close(results)
-
-	// Collect results.
+// getOllamaEmbeddingsWithCache is the 'force' mode implementation.
+func getOllamaEmbeddingsWithCache(sentences []string, ollamaURL, ollamaModel string, client *http.Client, opts Options) ([][]float64, error) {
+	numSentences := len(sentences)
 	vectors := make([][]float64, numSentences)
-	for result := range results {
-		if result.err != nil {
-			// Fail fast on the first error.
-			return nil, result.err
+
+	// 1. Pre-calculate all TF-IDF n-gram vectors (cache keys).
+	ngramSentences := make([][]string, numSentences)
+	for i, s := range sentences {
+		ngramSentences[i] = text.GenerateCharNgrams(s, 3, 5)
+	}
+	corpus := tfidf.NewCorpus(ngramSentences)
+	keyVectors := make([]map[string]float64, numSentences)
+	for i, ns := range ngramSentences {
+		keyVectors[i] = corpus.Vectorize(ns)
+	}
+
+	// 2. Identify cache hits and misses.
+	jobsToRun := make([]ollamaJob, 0)
+	for i, key := range keyVectors {
+		embedding, found := opts.EmbeddingCache.Find(key, opts.CacheSimilarityThreshold)
+		if found {
+			vectors[i] = embedding
+		} else {
+			jobsToRun = append(jobsToRun, ollamaJob{index: i, sentence: sentences[i]})
 		}
+	}
+
+	if len(jobsToRun) == 0 {
+		return vectors, nil
+	}
+
+	// 3. Run Ollama workers for cache misses.
+	results, err := runOllamaWorkers(jobsToRun, ollamaURL, ollamaModel, client)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Collect results and update the cache.
+	for _, result := range results {
+		vectors[result.index] = result.embedding
+		// Передаем threshold, который используется для инкрементального анализа
+		opts.EmbeddingCache.Set(keyVectors[result.index], result.embedding, opts.CacheSimilarityThreshold)
+	}
+	return vectors, nil
+}
+
+// getOllamaEmbeddingsAdaptive handles the 'adaptive' mode logic.
+func getOllamaEmbeddingsAdaptive(sentences []string, ollamaURL, ollamaModel string, client *http.Client, opts Options) ([][]float64, error) {
+	manager, ok := opts.EmbeddingCache.(AdaptiveCacheManager)
+	if !ok {
+		return nil, errors.New("adaptive cache mode requires an EmbeddingCache that implements AdaptiveCacheManager")
+	}
+
+	manager.Start(opts.CacheSimilarityThreshold, opts.AdaptiveCacheActivationThreshold)
+
+	if manager.IsActivated() {
+		// Once activated, it behaves identically to 'force' mode.
+		return getOllamaEmbeddingsWithCache(sentences, ollamaURL, ollamaModel, client, opts)
+	}
+
+	// --- Pre-activation: Get embeddings directly and queue for async caching ---
+	// 1. Get all embeddings directly from Ollama.
+	vectors, err := getOllamaEmbeddingsDirect(sentences, ollamaURL, ollamaModel, client)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Asynchronously populate the cache.
+	// This part does not block the return to the user.
+	go func() {
+		ngramSentences := make([][]string, len(sentences))
+		for i, s := range sentences {
+			ngramSentences[i] = text.GenerateCharNgrams(s, 3, 5)
+		}
+		corpus := tfidf.NewCorpus(ngramSentences)
+		for i, ns := range ngramSentences {
+			keyVector := corpus.Vectorize(ns)
+			manager.QueueSet(keyVector, vectors[i])
+		}
+	}()
+
+	return vectors, nil
+}
+
+// getOllamaEmbeddingsDirect is the 'disable' mode implementation (no caching).
+func getOllamaEmbeddingsDirect(sentences []string, ollamaURL, ollamaModel string, client *http.Client) ([][]float64, error) {
+	jobsToRun := make([]ollamaJob, len(sentences))
+	for i, s := range sentences {
+		jobsToRun[i] = ollamaJob{index: i, sentence: s}
+	}
+
+	results, err := runOllamaWorkers(jobsToRun, ollamaURL, ollamaModel, client)
+	if err != nil {
+		return nil, err
+	}
+
+	vectors := make([][]float64, len(sentences))
+	for _, result := range results {
 		vectors[result.index] = result.embedding
 	}
 
 	return vectors, nil
 }
 
-// ollamaWorker is a worker function that processes embedding requests from the jobs channel.
+// runOllamaWorkers manages the worker pool for fetching embeddings.
+func runOllamaWorkers(jobsToRun []ollamaJob, ollamaURL, ollamaModel string, client *http.Client) ([]ollamaResult, error) {
+	numJobs := len(jobsToRun)
+	if numJobs == 0 {
+		return []ollamaResult{}, nil
+	}
+
+	numWorkersStr := os.Getenv(OllamaMaxWorkersEnvVar)
+	numWorkers, err := strconv.Atoi(numWorkersStr)
+	if err != nil || numWorkers <= 0 {
+		numWorkers = DefaultOllamaWorkers
+	}
+	if numWorkers > numJobs {
+		numWorkers = numJobs
+	}
+
+	jobs := make(chan ollamaJob, numJobs)
+	resultsChan := make(chan ollamaResult, numJobs)
+	url := strings.TrimSuffix(ollamaURL, "/") + "/api/embeddings"
+
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go ollamaWorker(&wg, client, jobs, resultsChan, url, ollamaModel)
+	}
+
+	for _, job := range jobsToRun {
+		jobs <- job
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(resultsChan)
+
+	results := make([]ollamaResult, 0, numJobs)
+	for result := range resultsChan {
+		if result.err != nil {
+			return nil, result.err // Fail fast
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+// ... (ollamaWorker, cosineSimilarityDense, etc. remain the same) ...
 func ollamaWorker(wg *sync.WaitGroup, client *http.Client, jobs <-chan ollamaJob, results chan<- ollamaResult, url, model string) {
 	defer wg.Done()
 	for job := range jobs {
@@ -336,7 +466,6 @@ func ollamaWorker(wg *sync.WaitGroup, client *http.Client, jobs <-chan ollamaJob
 	}
 }
 
-// cosineSimilarityDense calculates the cosine similarity between two dense vectors.
 func cosineSimilarityDense(v1, v2 []float64) float64 {
 	if len(v1) != len(v2) || len(v1) == 0 {
 		return 0.0
@@ -355,7 +484,6 @@ func cosineSimilarityDense(v1, v2 []float64) float64 {
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
-// calculateCohesionDense calculates cohesion scores based on dense vectors.
 func calculateCohesionDense(vectors [][]float64) []float64 {
 	if len(vectors) < 2 {
 		return []float64{}
@@ -371,21 +499,33 @@ func validateOptions(opts Options) error {
 	if opts.MaxTokens <= 0 {
 		return errors.New("MaxTokens must be a positive number")
 	}
+	if opts.EmbeddingCacheMode != CacheModeDisable && opts.EmbeddingCacheMode != "" && opts.EmbeddingCache == nil {
+		return errors.New("EmbeddingCache must be provided when a cache mode is enabled")
+	}
 	return nil
 }
 
 func setDefaultOptions(opts *Options) {
-	// Default for DepthThreshold when MinSplitSimilarity is 0
+	if opts.EmbeddingCacheMode == "" {
+		opts.EmbeddingCacheMode = CacheModeDisable
+	}
+
 	if opts.MinSplitSimilarity == 0 && opts.DepthThreshold < 0 {
 		opts.DepthThreshold = 0.1
 	}
 
-	// Default for LanguageDetectionMode
 	if opts.Language == "" && opts.LanguageDetectionMode == "" {
 		opts.LanguageDetectionMode = LangDetectModeFirstSentence
 	}
 
-	// Default boolean flags
+	if opts.EmbeddingCacheMode != CacheModeDisable && opts.CacheSimilarityThreshold == 0 {
+		opts.CacheSimilarityThreshold = 0.9
+	}
+
+	if opts.EmbeddingCacheMode == CacheModeAdaptive && opts.AdaptiveCacheActivationThreshold == 0 {
+		opts.AdaptiveCacheActivationThreshold = 100
+	}
+
 	if opts.EnableStopWordRemoval == nil {
 		t := true
 		opts.EnableStopWordRemoval = &t
@@ -400,7 +540,7 @@ func setDefaultOptions(opts *Options) {
 	}
 }
 
-// calculateCohesion computes the cosine similarity between adjacent sentence vectors.
+// ... (calculateCohesion, findBoundaries, buildChunks, makeChunk remain the same) ...
 func calculateCohesion(vectors []map[string]float64) []float64 {
 	if len(vectors) < 2 {
 		return []float64{}
@@ -412,8 +552,6 @@ func calculateCohesion(vectors []map[string]float64) []float64 {
 	return scores
 }
 
-// findBoundaries identifies boundaries from similarity scores and options.
-// Returns a map where a key of `i` means a split after sentence `i`.
 func findBoundaries(scores []float64, opts Options) map[int]bool {
 	boundaries := make(map[int]bool)
 	if len(scores) == 0 {
@@ -444,7 +582,6 @@ func findBoundaries(scores []float64, opts Options) map[int]bool {
 	return boundaries
 }
 
-// buildChunks constructs the final chunks, strictly respecting MaxTokens.
 func buildChunks(
 	sentences []string,
 	tokenCounts []int,
@@ -458,15 +595,11 @@ func buildChunks(
 	for i, sentence := range sentences {
 		sentenceTokens := tokenCounts[i]
 
-		// Handle oversized single sentences
 		if sentenceTokens > maxTokens {
-			// First, finalize the current chunk if it has content
 			if len(currentChunkSentences) > 0 {
 				chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
 			}
-			// Add the oversized sentence as its own chunk
 			chunks = append(chunks, makeChunk([]string{sentence}, sentenceTokens))
-			// Reset for the next chunk
 			currentChunkSentences = []string{}
 			currentChunkTokens = 0
 			continue
@@ -485,7 +618,6 @@ func buildChunks(
 		currentChunkTokens += sentenceTokens
 	}
 
-	// Add the last remaining chunk if it exists
 	if len(currentChunkSentences) > 0 {
 		chunks = append(chunks, makeChunk(currentChunkSentences, currentChunkTokens))
 	}

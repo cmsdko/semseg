@@ -1,8 +1,11 @@
+// file: internal/text/text.go
+
 package text
 
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // sentenceEndRegex detects sentence boundaries.
@@ -69,4 +72,46 @@ func Tokenize(text string) []string {
 		}
 	}
 	return out
+}
+
+// GenerateCharNgrams creates a slice of character n-grams from a string.
+// The text is pre-processed by converting to lowercase and removing all
+// non-alphanumeric characters to create a continuous character stream.
+func GenerateCharNgrams(s string, minN, maxN int) []string {
+	if minN <= 0 || maxN < minN {
+		return []string{}
+	}
+
+	// 1. Convert to lowercase
+	lower := strings.ToLower(s)
+
+	// 2. Remove all non-letter and non-number characters to create a continuous stream.
+	// This ensures that n-grams do not span across spaces or punctuation.
+	cleaned := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			return r
+		}
+		return -1
+	}, lower)
+
+	// Use runes for correct Unicode handling
+	runes := []rune(cleaned)
+	numRunes := len(runes)
+	// --- FIX APPLIED HERE ---
+	// Initialize as a non-nil, zero-length slice. This is a best practice for functions
+	// returning slices to avoid returning a nil slice, which simplifies client code
+	// and fixes DeepEqual checks in tests.
+	ngrams := make([]string, 0)
+
+	// 3. Generate n-grams for each size from minN to maxN
+	for n := minN; n <= maxN; n++ {
+		if numRunes < n {
+			continue
+		}
+		for i := 0; i <= numRunes-n; i++ {
+			ngrams = append(ngrams, string(runes[i:i+n]))
+		}
+	}
+
+	return ngrams
 }
